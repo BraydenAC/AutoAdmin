@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AutoAdmin Setup Flow</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  /* Layout: one column, swimlane diagram on top, hotspot ledger below. */
+  --bg: #f4f5f2;
+  --surface: #ffffff;
+  --ink: #1f2522;
+  --muted: #5d6762;
+  --line: #d3d8d3;
+  --cost: #b3261e;      /* redstone: API token / $ hotspots */
+  --machine: #2a5aa6;   /* lapis: disk, network, CPU, RAM hotspots */
+  --lane: #e9ece7;
+  --font-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #141816;
+    --surface: #1c211e;
+    --ink: #e4e8e3;
+    --muted: #9aa49e;
+    --line: #343c37;
+    --cost: #f0776c;
+    --machine: #79a6f2;
+    --lane: #1a1f1c;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #141816;
+  --surface: #1c211e;
+  --ink: #e4e8e3;
+  --muted: #9aa49e;
+  --line: #343c37;
+  --cost: #f0776c;
+  --machine: #79a6f2;
+  --lane: #1a1f1c;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.55;
+}
+main {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 40px 20px 64px;
+  display: grid;
+  gap: 40px;
+}
+h1, h2 {
+  font-family: var(--font-display);
+  text-wrap: balance;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+h1 { font-size: 2rem; line-height: 1.15; }
+h2 { font-size: 1.3rem; }
+p { margin: 0; max-width: 68ch; }
+code { font-family: var(--font-mono); font-size: 0.88em; }
+.intro { display: grid; gap: 12px; }
+.intro .status {
+  font-size: 0.9rem; color: var(--muted);
+}
+.key { display: flex; flex-wrap: wrap; gap: 20px; font-size: 0.9rem; color: var(--muted); }
+.key span { display: inline-flex; align-items: center; gap: 8px; }
+.dot { width: 22px; height: 22px; border-radius: 50%; display: inline-grid; place-items: center;
+  font: 600 11px/1 var(--font-mono); color: var(--surface); }
+.dot.t { background: var(--cost); }
+.dot.m { background: var(--machine); }
+.dash { width: 28px; border-top: 2px dashed var(--muted); display: inline-block; }
+
+figure { margin: 0; display: grid; gap: 12px; }
+.diagram {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow-x: auto;
+  padding: 8px;
+}
+.diagram svg { display: block; width: 100%; min-width: 820px; height: auto; color: var(--ink); }
+figcaption { font-size: 0.92rem; color: var(--muted); max-width: 80ch; }
+
+svg .lane { fill: var(--lane); }
+svg .lanehead { font: 600 12px var(--font-body); fill: var(--muted); text-anchor: middle; letter-spacing: 0.04em; }
+svg .box { fill: var(--surface); stroke: var(--ink); stroke-width: 1.2; }
+svg .box.llm { stroke-width: 2; }
+svg .box.loop { fill: none; stroke: var(--muted); stroke-dasharray: 5 4; }
+svg .lbl { font: 500 12px var(--font-body); fill: var(--ink); text-anchor: middle; }
+svg .sub { font: 400 11px var(--font-mono); fill: var(--muted); text-anchor: middle; }
+svg .edge { stroke: var(--ink); stroke-width: 1.3; fill: none; }
+svg .edge.wait { stroke-dasharray: 5 4; stroke: var(--muted); }
+svg .edge.fail { stroke: var(--cost); stroke-dasharray: 3 3; }
+svg .elbl { font: 400 11px var(--font-body); fill: var(--muted); }
+svg .hot-t { fill: var(--cost); }
+svg .hot-m { fill: var(--machine); }
+svg .hottext { font: 600 10px var(--font-mono); fill: var(--surface); text-anchor: middle; }
+svg .arrowhead { fill: var(--ink); }
+svg .arrowhead.wait { fill: var(--muted); }
+
+.ledger { display: grid; gap: 16px; }
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; min-width: 760px; font-size: 0.92rem; }
+th, td { text-align: left; vertical-align: top; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; color: var(--muted); font-size: 0.8rem; letter-spacing: 0.04em; text-transform: uppercase; }
+tr:last-child td { border-bottom: none; }
+td.id { width: 52px; }
+td.impact { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.compare { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.est { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; display: grid; gap: 6px; }
+.est.bad { border-left: 4px solid var(--cost); }
+.est.good { border-left: 4px solid var(--machine); }
+.est .n { font: 700 1.7rem/1.1 var(--font-display); font-variant-numeric: tabular-nums; }
+.est .what { font-weight: 600; }
+.est p { font-size: 0.9rem; color: var(--muted); }
+
+ol.recs { margin: 0; padding-left: 1.3em; display: grid; gap: 10px; max-width: 78ch; }
+ol.recs b { font-weight: 600; }
+.note { font-size: 0.85rem; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <header class="intro">
+    <h1>AutoAdmin setup flow and where it can get expensive</h1>
+    <p>This traces the first-time setup in <code>PLAN.md</code>, from "@AutoAdmin I want a 1.21.1 Fabric superflat server with 3 mods" to a running server. Steps sit in the lane of whoever does the work. Every arrow into the Claude lane resends the whole conversation, so that's where API cost builds up.</p>
+    <p class="status">Status: phase 2 isn't built yet, so this is the planned flow. Sizes and costs are estimates for Sonnet 5.5 at current prices.</p>
+    <div class="key">
+      <span><i class="dot t">T</i> API cost hotspot (tokens / $)</span>
+      <span><i class="dot m">M</i> Machine hotspot (disk, network, CPU, RAM)</span>
+      <span><i class="dash"></i> waits on a human, or a failure path</span>
+    </div>
+  </header>
+
+  <figure>
+    <div class="diagram">
+      <svg viewBox="0 0 1000 920" role="img" aria-label="Swimlane diagram of the setup flow. API cost hotspots cluster where tool output, waiting, or per-mod loops flow back into the Claude lane; machine hotspots are at the JDK download, loader install, mod downloads, and first server start.">
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path class="arrowhead" d="M0,0 L10,5 L0,10 z"/>
+          </marker>
+          <marker id="ahw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path class="arrowhead wait" d="M0,0 L10,5 L0,10 z"/>
+          </marker>
+        </defs>
+
+        <!-- lanes -->
+        <rect class="lane" x="0"   y="0" width="190" height="920" rx="6"/>
+        <rect class="lane" x="200" y="0" width="200" height="920" rx="6"/>
+        <rect class="lane" x="410" y="0" width="200" height="920" rx="6"/>
+        <rect class="lane" x="620" y="0" width="180" height="920" rx="6"/>
+        <rect class="lane" x="810" y="0" width="190" height="920" rx="6"/>
+        <text class="lanehead" x="95"  y="26">DISCORD USER</text>
+        <text class="lanehead" x="300" y="26">CLAUDE (AGENT LOOP)</text>
+        <text class="lanehead" x="510" y="26">TOOL CODE</text>
+        <text class="lanehead" x="710" y="26">INTERNET</text>
+        <text class="lanehead" x="905" y="26">HOST MACHINE</text>
+
+        <!-- r0: request -->
+        <rect class="box" x="15" y="50" width="160" height="46" rx="6"/>
+        <text class="lbl" x="95" y="70">@AutoAdmin request</text>
+        <text class="sub" x="95" y="86">version, loader, mods</text>
+        <rect class="box llm" x="215" y="50" width="170" height="46" rx="6"/>
+        <text class="lbl" x="300" y="70">Parse request</text>
+        <text class="sub" x="300" y="86">call 1 · cold cache</text>
+        <line class="edge" x1="175" y1="73" x2="213" y2="73" marker-end="url(#ah)"/>
+
+        <!-- r1: clarify -->
+        <rect class="box llm" x="215" y="120" width="170" height="46" rx="6"/>
+        <text class="lbl" x="300" y="140">Clarify if needed</text>
+        <text class="sub" x="300" y="156">asks the user</text>
+        <path class="edge wait" d="M215,143 L95,143 L95,98" marker-end="url(#ahw)"/>
+        <text class="elbl" x="105" y="136">waits for reply</text>
+        <line class="edge" x1="300" y1="96" x2="300" y2="118" marker-end="url(#ah)"/>
+        <circle class="hot-t" cx="385" cy="120" r="11"/><text class="hottext" x="385" y="124">T1</text>
+
+        <!-- r2: resolve version -->
+        <rect class="box" x="425" y="190" width="170" height="46" rx="6"/>
+        <text class="lbl" x="510" y="210">resolve_version</text>
+        <text class="sub" x="510" y="226">→ Java major</text>
+        <rect class="box" x="630" y="190" width="160" height="46" rx="6"/>
+        <text class="lbl" x="710" y="210">Mojang manifest</text>
+        <text class="sub" x="710" y="226">~200 KB JSON</text>
+        <path class="edge" d="M300,166 L300,213 L423,213" marker-end="url(#ah)"/>
+        <line class="edge" x1="595" y1="213" x2="628" y2="213" marker-end="url(#ah)"/>
+        <circle class="hot-t" cx="790" cy="190" r="11"/><text class="hottext" x="790" y="194">T2</text>
+
+        <!-- r3: java -->
+        <rect class="box" x="425" y="260" width="170" height="46" rx="6"/>
+        <text class="lbl" x="510" y="280">ensure_java</text>
+        <text class="sub" x="510" y="296">skip if cached</text>
+        <rect class="box" x="630" y="260" width="160" height="46" rx="6"/>
+        <text class="lbl" x="710" y="280">Temurin JDK</text>
+        <text class="sub" x="710" y="296">~200 MB download</text>
+        <rect class="box" x="825" y="260" width="160" height="46" rx="6"/>
+        <text class="lbl" x="905" y="280">runtime/java/21</text>
+        <text class="sub" x="905" y="296">~330 MB on disk</text>
+        <line class="edge" x1="510" y1="236" x2="510" y2="258" marker-end="url(#ah)"/>
+        <line class="edge" x1="595" y1="283" x2="628" y2="283" marker-end="url(#ah)"/>
+        <line class="edge" x1="790" y1="283" x2="823" y2="283" marker-end="url(#ah)"/>
+        <circle class="hot-m" cx="985" cy="260" r="11"/><text class="hottext" x="985" y="264">M1</text>
+
+        <!-- r4: loader -->
+        <rect class="box" x="425" y="330" width="170" height="46" rx="6"/>
+        <text class="lbl" x="510" y="350">install_loader</text>
+        <text class="sub" x="510" y="366">Fabric / NeoForge</text>
+        <rect class="box" x="630" y="330" width="160" height="46" rx="6"/>
+        <text class="lbl" x="710" y="350">server jar + libs</text>
+        <text class="sub" x="710" y="366">50–300 MB</text>
+        <rect class="box" x="825" y="330" width="160" height="46" rx="6"/>
+        <text class="lbl" x="905" y="350">installer process</text>
+        <text class="sub" x="905" y="366">NeoForge: 1–3 min CPU</text>
+        <line class="edge" x1="510" y1="306" x2="510" y2="328" marker-end="url(#ah)"/>
+        <line class="edge" x1="595" y1="353" x2="628" y2="353" marker-end="url(#ah)"/>
+        <line class="edge" x1="790" y1="353" x2="823" y2="353" marker-end="url(#ah)"/>
+        <path class="edge" d="M425,370 L330,370 L330,398" marker-end="url(#ah)"/>
+        <text class="elbl" x="338" y="390">installer log</text>
+        <circle class="hot-t" cx="425" cy="330" r="11"/><text class="hottext" x="425" y="334">T3</text>
+        <circle class="hot-m" cx="985" cy="330" r="11"/><text class="hottext" x="985" y="334">M2</text>
+
+        <!-- r5: EULA -->
+        <rect class="box llm" x="215" y="400" width="170" height="46" rx="6"/>
+        <text class="lbl" x="300" y="420">EULA confirmation</text>
+        <text class="sub" x="300" y="436">human must say yes</text>
+        <path class="edge wait" d="M215,423 L95,423" marker-end="url(#ahw)"/>
+        <rect class="box" x="15" y="400" width="80" height="46" rx="6" style="fill:none;stroke:none"/>
+        <text class="elbl" x="100" y="415">waits for "yes"</text>
+        <circle class="hot-t" cx="385" cy="400" r="11"/><text class="hottext" x="385" y="404">T1</text>
+
+        <!-- r6: properties -->
+        <rect class="box" x="425" y="470" width="170" height="46" rx="6"/>
+        <text class="lbl" x="510" y="490">write properties</text>
+        <text class="sub" x="510" y="506">eula, world, RCON</text>
+        <path class="edge" d="M300,446 L300,493 L423,493" marker-end="url(#ah)"/>
+
+        <!-- r7: mods loop -->
+        <rect class="box loop" x="205" y="535" width="590" height="150" rx="10"/>
+        <text class="elbl" x="218" y="553">for each of N mods (+ dependencies)</text>
+        <rect class="box llm" x="215" y="565" width="170" height="46" rx="6"/>
+        <text class="lbl" x="300" y="585">Pick mod / version</text>
+        <text class="sub" x="300" y="601">1 call per hop</text>
+        <rect class="box" x="425" y="565" width="170" height="46" rx="6"/>
+        <text class="lbl" x="510" y="585">search / versions</text>
+        <text class="sub" x="510" y="601">Modrinth API</text>
+        <rect class="box" x="630" y="565" width="150" height="46" rx="6"/>
+        <text class="lbl" x="705" y="585">Modrinth</text>
+        <text class="sub" x="705" y="601">10–300 KB JSON</text>
+        <line class="edge" x1="385" y1="582" x2="423" y2="582" marker-end="url(#ah)"/>
+        <line class="edge" x1="423" y1="596" x2="387" y2="596" marker-end="url(#ah)"/>
+        <line class="edge" x1="595" y1="588" x2="628" y2="588" marker-end="url(#ah)"/>
+        <rect class="box" x="425" y="630" width="170" height="46" rx="6"/>
+        <text class="lbl" x="510" y="650">download + sha512</text>
+        <text class="sub" x="510" y="666">fallback: URL, upload</text>
+        <line class="edge" x1="510" y1="611" x2="510" y2="628" marker-end="url(#ah)"/>
+        <path class="edge wait" d="M425,664 L95,664 L95,690" marker-end="url(#ahw)"/>
+        <text class="elbl" x="105" y="656">"please upload the jar"</text>
+        <rect class="box" x="825" y="630" width="160" height="46" rx="6"/>
+        <text class="lbl" x="905" y="650">mods/ + cache</text>
+        <text class="sub" x="905" y="666">1–50 MB each</text>
+        <line class="edge" x1="595" y1="653" x2="823" y2="653" marker-end="url(#ah)"/>
+        <path class="edge" d="M300,516 L300,563" marker-end="url(#ah)"/>
+        <circle class="hot-t" cx="385" cy="565" r="11"/><text class="hottext" x="385" y="569">T4</text>
+        <circle class="hot-m" cx="985" cy="630" r="11"/><text class="hottext" x="985" y="634">M3</text>
+
+        <!-- r8: start -->
+        <rect class="box" x="425" y="715" width="170" height="46" rx="6"/>
+        <text class="lbl" x="510" y="735">systemd start</text>
+        <text class="sub" x="510" y="751">unit + linger</text>
+        <rect class="box" x="825" y="715" width="160" height="46" rx="6"/>
+        <text class="lbl" x="905" y="735">JVM first boot</text>
+        <text class="sub" x="905" y="751">world gen · -Xmx RAM</text>
+        <line class="edge" x1="510" y1="676" x2="510" y2="713" marker-end="url(#ah)"/>
+        <line class="edge" x1="595" y1="738" x2="823" y2="738" marker-end="url(#ah)"/>
+        <circle class="hot-m" cx="985" cy="715" r="11"/><text class="hottext" x="985" y="719">M4</text>
+
+        <!-- r9: wait for done -->
+        <rect class="box" x="425" y="785" width="170" height="46" rx="6"/>
+        <text class="lbl" x="510" y="805">wait for "Done ("</text>
+        <text class="sub" x="510" y="821">tail latest.log</text>
+        <line class="edge" x1="510" y1="761" x2="510" y2="783" marker-end="url(#ah)"/>
+        <path class="edge" d="M905,761 L905,808 L597,808" marker-end="url(#ah)"/>
+        <text class="elbl" x="740" y="800">log lines</text>
+        <circle class="hot-t" cx="425" cy="785" r="11"/><text class="hottext" x="425" y="789">T5</text>
+
+        <!-- r10: report / crash -->
+        <rect class="box llm" x="215" y="855" width="170" height="46" rx="6"/>
+        <text class="lbl" x="300" y="875">Report or diagnose</text>
+        <text class="sub" x="300" y="891">crash → analysis loop</text>
+        <path class="edge" d="M510,831 L510,878 L387,878" marker-end="url(#ah)"/>
+        <path class="edge fail" d="M215,868 L175,868" marker-end="url(#ah)"/>
+        <rect class="box" x="15" y="855" width="160" height="46" rx="6"/>
+        <text class="lbl" x="95" y="875">"Server's up"</text>
+        <text class="sub" x="95" y="891">or @admin ping</text>
+        <circle class="hot-t" cx="385" cy="855" r="11"/><text class="hottext" x="385" y="859">T6</text>
+      </svg>
+    </div>
+    <figcaption>Planned setup flow. Bold boxes are Claude calls; each one resends the conversation so far. The cost hotspots (T) are where a raw tool output, a human wait, or a per-mod loop feeds back into Claude's lane. The machine hotspots (M) are the large downloads and the two heavy processes, the loader installer and the first boot.</figcaption>
+  </figure>
+
+  <section class="ledger">
+    <h2>Hotspot ledger</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>ID</th><th>Where</th><th>What grows</th><th>Rough impact</th><th>Mitigation for phase 2</th></tr></thead>
+        <tbody>
+          <tr><td class="id"><i class="dot t">T1</i></td><td>Clarifying questions, EULA, upload requests</td><td>Every human wait is another full round trip. The cache expires after 5 minutes, so a slow reply means the whole context gets written to the cache again.</td><td class="impact">+$0.01–0.03 per wait</td><td>Ask everything in one message: missing details plus the EULA, together. Put a fixed cache point after the instructions and tool list, so the shared prefix stays cached.</td></tr>
+          <tr><td class="id"><i class="dot t">T2</i></td><td>Version manifest</td><td>The full Mojang manifest is about 200 KB, roughly 50k tokens. It must never reach Claude.</td><td class="impact">~$0.13 if passed raw</td><td><code>resolve_version</code> does the lookup in code and returns only the version id, its Java major and the jar URL.</td></tr>
+          <tr><td class="id"><i class="dot t">T3</i></td><td>Loader installer output</td><td>The NeoForge installer prints thousands of lines. If that lands in a tool result, it stays in the context for every later call.</td><td class="impact">10–40k tokens, resent each step</td><td>Tools return a short status. On failure, return error lines plus the last ~40 lines. Hard-cap every tool result at about 2k tokens.</td></tr>
+          <tr><td class="id"><i class="dot t">T4</i></td><td>Mod resolution loop</td><td>If Claude drives search, then version list, then dependencies, then download, one call per hop, that's 4+ calls per mod. The Modrinth version lists for popular mods can run to hundreds of KB.</td><td class="impact">$0.10–0.50 for 3 mods</td><td>One <code>install_mods(names)</code> tool resolves in code: exact slug, loader and game-version filter, required dependencies, sha512 check. It returns only the ambiguous matches for Claude to decide.</td></tr>
+          <tr><td class="id"><i class="dot t">T5</i></td><td>Waiting for startup</td><td>If Claude polls "is it up yet?", each poll is a call. The startup log is also large.</td><td class="impact">$0.01+ per poll</td><td>The tool blocks until it sees <code>Done (</code> or a timeout, in code. Claude is never in the polling loop.</td></tr>
+          <tr><td class="id"><i class="dot t">T6</i></td><td>First-boot crash</td><td>Crash reports and logs get pasted in for analysis, and analysis runs again on every repeat crash.</td><td class="impact">$0.03–0.10 per analysis</td><td>Pre-filter in code: exception lines, "caused by" chains and mod ids. The crash policy already limits repeats.</td></tr>
+          <tr><td class="id"><i class="dot m">M1</i></td><td>JDK download</td><td>~200 MB per Java major. World profiles that need Java 8, 17, 21 and 25 would hold four of them.</td><td class="impact">~330 MB disk each</td><td>Keep one shared JDK per major in <code>runtime/java/</code>, checked by checksum. Download a major only when a profile needs it.</td></tr>
+          <tr><td class="id"><i class="dot m">M2</i></td><td>Loader install</td><td>The NeoForge installer patches and processes libraries, using CPU for 1–3 minutes.</td><td class="impact">1–3 min CPU</td><td>Run it as a background job with a timeout. Cache the installer and libraries per version, so switching worlds doesn't redo it.</td></tr>
+          <tr><td class="id"><i class="dot m">M3</i></td><td>Mod jars and retries</td><td>The same jars get downloaded again for every profile. A failed URL could retry without limit.</td><td class="impact">disk + bandwidth</td><td>Keep a cache in <code>runtime/cache/</code> keyed by sha512, linked into each profile. Retries are bounded (3 with backoff), then fall back to the next source.</td></tr>
+          <tr><td class="id"><i class="dot m">M4</i></td><td>First boot</td><td>Generating the world and a fixed <code>-Xmx</code> heap can starve the host or the bot. Superflat is cheap; large biomes and amplified are not.</td><td class="impact">RAM = -Xmx + ~1 GB</td><td>Size <code>-Xmx</code> from free RAM, leaving headroom for the OS and the bot. Skip the backup step when the world is empty.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="ledger">
+    <h2>One full setup, two designs</h2>
+    <div class="compare">
+      <div class="est bad">
+        <span class="what">Claude drives every step</span>
+        <span class="n">$1–3</span>
+        <p>About 40 calls. Raw outputs push the context to 40–60k tokens. A non-admin hits the $0.50 per-user cap partway through setup.</p>
+      </div>
+      <div class="est good">
+        <span class="what">Coarse tools, code does the work</span>
+        <span class="n">$0.08–0.20</span>
+        <p>10–14 calls with the context kept under ~12k tokens. Claude parses the request, settles ambiguities, handles failures and reports. Progress messages come from code.</p>
+      </div>
+    </div>
+    <p class="note">Both are estimates from Sonnet 5.5 pricing: $2 input, $2.50 cache write, $0.20 cache read and $10 output per million tokens. We'll replace them with measured numbers once phase 2 runs.</p>
+  </section>
+
+  <section class="ledger">
+    <h2>What this changes in the phase 2 design</h2>
+    <ol class="recs">
+      <li><b>Setup runs as a job in code.</b> One <code>start_setup(spec)</code> tool kicks off a pipeline: version, Java, loader, properties, mods, start. The harness posts progress lines to Discord directly, with no model call. Claude is only called back for decisions and failures.</li>
+      <li><b>Every tool result is capped and summarized.</b> No raw manifests, installer logs, or API listings ever enter the context.</li>
+      <li><b>Claude never polls.</b> Long operations either wait in code or report back as an event.</li>
+      <li><b>Human questions are batched</b> into one message, and the shared prompt prefix gets its own cache point.</li>
+      <li><b>Downloads go through one checksum-keyed cache</b> with bounded retries, and the heap size comes from free RAM.</li>
+    </ol>
+  </section>
+</main>
+</body>
+</html>

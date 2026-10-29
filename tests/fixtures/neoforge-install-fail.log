@@ -1,0 +1,30 @@
+Outputting log to file installer.jar.log
+JVM info: Eclipse Adoptium - 21.0.13 - 21.0.13+9-LTS
+java.net.preferIPv4Stack=true
+Current Time: 29/10/2026 16:35:56
+Host: maven.neoforged.net [89.187.180.102, 89.187.180.92]
+Host: libraries.minecraft.net [150.171.110.212]
+Host: launchermeta.mojang.com [150.171.110.211]
+Host: piston-meta.mojang.com [150.171.110.211]
+Host: sessionserver.mojang.com [150.171.110.209]
+Found java version 21.0.13
+Target Directory: /srv/autoadmin/neofail
+Following redirect: https://neoforged.net/mirrorlist.json
+Considering Minecraft server jar
+Downloading library from https://piston-meta.mojang.com/v1/packages/018296bcb207bea6fd25b05f08eee3942dcec406/1.21.1.json
+Oct 29, 2026 4:35:57 PM net.minecraftforge.installer.Downloader download
+WARNING: Failed to download from https://piston-meta.mojang.com/v1/packages/018296bcb207bea6fd25b05f08eee3942dcec406/1.21.1.json
+java.nio.file.AccessDeniedException: /srv/autoadmin/neofail/1.21.1.json
+	at java.base/sun.nio.fs.UnixException.translateToIOException(Unknown Source)
+	at java.base/sun.nio.fs.UnixException.rethrowAsIOException(Unknown Source)
+	at java.base/sun.nio.fs.UnixException.rethrowAsIOException(Unknown Source)
+	at java.base/sun.nio.fs.UnixFileSystemProvider.newByteChannel(Unknown Source)
+	at java.base/java.nio.file.spi.FileSystemProvider.newOutputStream(Unknown Source)
+	at java.base/java.nio.file.Files.newOutputStream(Unknown Source)
+	at java.base/java.nio.file.Files.copy(Unknown Source)
+	at net.minecraftforge.installer.Downloader.download(Downloader.java:122)
+	at net.minecraftforge.installer.json.Util.getVanillaVersion(Util.java:82)
+	at net.minecraftforge.installer.actions.ServerInstall.run(ServerInstall.java:73)
+	at net.minecraftforge.installer.SimpleInstaller.main(SimpleInstaller.java:174)
+Failed to download version manifest, can not find server jar URL.
+There was an error during installation

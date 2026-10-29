@@ -1,0 +1,29 @@
+[project]
+name = "autoadmin"
+version = "0.1.0"
+description = "LLM agent that installs and administers a Minecraft server via Discord"
+authors = [
+    { name = "Brayden Cloutier", email = "135390195+BraydenAC@users.noreply.github.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "anthropic>=2.2.0",
+    "discord-py>=2.7.1",
+    "python-dotenv>=1.2.4",
+]
+
+[project.scripts]
+autoadmin = "autoadmin.__main__:main"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[build-system]
+requires = ["uv_build>=0.9.9,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]

@@ -1,0 +1,76 @@
+# Copy to config.toml and edit. Secrets never go in this file.
+
+[paths]
+# Everything the agent may touch lives under here (the jail).
+runtime = "runtime"
+
+[agent]
+model = "claude-sonnet-5-5"
+effort = "medium"          # low | medium | high | xhigh | max
+max_tokens = 16000
+max_steps = 25             # tool-use round trips per turn before giving up
+
+[investigator]
+# Read-only sub-agent for crash/error analysis. Haiku 4.5 takes a thinking
+# budget instead of an effort level (must be >= 1024 and < max_tokens).
+model = "claude-haiku-4-5"
+thinking_budget = 4000
+max_tokens = 8000
+max_steps = 8
+
+[server]
+unit_name = "autoadmin-mc"   # systemd --user unit
+memory_mb = 6144             # default heap (-Xmx); admins can change it via chat
+min_host_free_mb = 4096      # never leave the host less RAM than this
+memory_overhead_mb = 1536    # systemd MemoryMax = heap + this
+nice = 5                     # lower CPU priority than the desktop
+server_port = 25565
+rcon_port = 25575            # localhost only
+start_timeout_s = 300
+stop_timeout_s = 90
+install_timeout_s = 900
+
+[budget]
+cap_usd = 10.0
+warn_fraction = 0.8        # ping admins once spend crosses this fraction of the cap
+user_block_fraction = 0.05 # non-admins are blocked past this fraction of the cap
+
+# USD per million tokens. Unknown models are priced at the most expensive row.
+[pricing."claude-opus-5-5"]
+input = 4.0
+output = 20.0
+cache_read = 0.20
+cache_write = 5.0
+
+[pricing."claude-sonnet-5-5"]
+input = 2.0
+output = 10.0
+cache_read = 0.20
+cache_write = 2.5
+
+[pricing."claude-opus-5"]
+input = 5.0
+output = 25.0
+cache_read = 0.50
+cache_write = 6.25
+
+[pricing."claude-opus-4-8"]
+input = 5.0
+output = 25.0
+cache_read = 0.50
+cache_write = 6.25
+
+[pricing."claude-haiku-4-5"]
+input = 1.0
+output = 5.0
+cache_read = 0.10
+cache_write = 1.25
+
+[discord]
+guild_id = 0
+channel_id = 0
+token_env = "AUTOADMIN_DISCORD_TOKEN"
+
+[cli]
+# Fake guild owner used by the CLI harness.
+owner = "owner"
