@@ -5,6 +5,7 @@ description = "LLM agent that installs and administers a Minecraft server via Di
 authors = [
     { name = "Brayden Cloutier", email = "135390195+BraydenAC@users.noreply.github.com" }
 ]
+license = "MIT"
 requires-python = ">=3.14"
 dependencies = [
     "anthropic>=2.2.0",
