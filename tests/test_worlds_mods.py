@@ -220,11 +220,14 @@ def modrinth(monkeypatch, services):
         return PROJECTS[ident]
     monkeypatch.setattr("autoadmin.server.mods.get_json", fake_get_json)
 
-    async def fake_fetch_to(url, dest, **kw):
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(b"jar")
-        return dest
-    monkeypatch.setattr(services.server.cache, "fetch_to", fake_fetch_to)
+    jars = services.jail.path("fakejars")
+    jars.mkdir(exist_ok=True)
+
+    async def fake_fetch(url, **kw):
+        vid = url.rsplit("/", 1)[-1].removesuffix(".jar")
+        mod_id = {"mm2": "modmenu", "api8": "fabric-api", "cl1": "clash"}.get(vid, vid)
+        return _jar(jars / f"{vid}.jar", "fabric.mod.json", json.dumps({"id": mod_id, "version": "1"}))
+    monkeypatch.setattr(services.server.cache, "fetch", fake_fetch)
 
 
 async def test_install_with_dependency_and_bounces(services, modrinth):
@@ -306,3 +309,28 @@ async def test_install_upload_checks_uploader(services, monkeypatch, tmp_path):
     assert (services.server.dir / "mods" / "cool.jar").exists()
     out, err = await call(services, ADMIN, "mods", args, state=state)
     assert err and "already installed" in out
+
+
+async def test_dependency_already_uploaded_is_not_duplicated(services, modrinth, monkeypatch, tmp_path):
+    """Regression: an uploaded jar later pulled in as a Modrinth dependency under another name."""
+    make_world(services)
+    services.perms.grant(ADMIN.id, ADMIN.name, Perm.MODS_MANAGE)
+    jar = _jar(tmp_path / "fabric_api_upload.jar", "fabric.mod.json", '{"id": "fabric-api", "version": "1"}')
+    modrinth_fetch = services.server.cache.fetch
+
+    async def upload_fetch(url, **kw):
+        return jar if url == "https://cdn/up.jar" else await modrinth_fetch(url, **kw)
+    monkeypatch.setattr(services.server.cache, "fetch", upload_fetch)
+    state = {"attachments": {"fabric_api_upload.jar": {"url": "https://cdn/up.jar", "by": ADMIN.id, "size": 1}}}
+    out, err = await call(services, ADMIN, "mods",
+                          mod_args(action="install_upload", names=["fabric_api_upload.jar"]), state=state)
+    assert not err
+    out, err = await call(services, ADMIN, "mods", mod_args(action="install", names=["modmenu"]))
+    assert "OK   Mod Menu" in out
+    assert "SKIP Fabric API (needed by modmenu): already installed as fabric_api_upload.jar" in out
+    st = services.server.state()
+    assert len(st.mods) == 2
+    uploaded = next(m for m in st.mods if m["filename"] == "fabric_api_upload.jar")
+    assert uploaded["required_by"] == ["modmenu"]
+    assert sorted(p.name for p in (services.server.dir / "mods").glob("*.jar")) == \
+        ["fabric_api_upload.jar", "mm2.jar"]

@@ -109,6 +109,23 @@ class ModManager:
                 return m
         return None
 
+    @staticmethod
+    def _jar_mod_id(path: Path) -> str | None:
+        try:
+            return inspect_jar(path).mod_id
+        except ServerError:
+            return None
+
+    @staticmethod
+    def _same_mod(st: InstallState, filename: str, mod_id: str | None) -> dict | None:
+        """An installed mod that is the same jar or declares the same mod id."""
+        for m in st.mods:
+            if m["filename"] == filename:
+                return m
+            if mod_id and mod_id in (m.get("mod_id"), m.get("slug")):
+                return m
+        return None
+
     def _path(self, m: dict) -> Path:
         return self.mods_dir / ("" if m.get("enabled", True) else "disabled") / m["filename"]
 
@@ -212,14 +229,23 @@ class ModManager:
 
         file = next((f for f in version["files"] if f.get("primary")), version["files"][0])
         try:
-            await self.server.cache.fetch_to(file["url"], self.mods_dir / file["filename"],
-                                             algo="sha512", digest=file["hashes"]["sha512"])
+            cached = await self.server.cache.fetch(file["url"], algo="sha512",
+                                                   digest=file["hashes"]["sha512"])
         except DownloadError as e:
             report.fail(f"{label}: download failed ({e}); try a direct URL or upload the jar")
             return
+        mod_id = self._jar_mod_id(cached)
+        same = self._same_mod(st, file["filename"], mod_id)
+        if same:
+            # Already present under another identity (e.g. uploaded earlier).
+            if required_by and required_by not in same.setdefault("required_by", []):
+                same["required_by"].append(required_by)
+            report.skip(f"{label}: already installed as {same['filename']}")
+            return
+        await asyncio.to_thread(shutil.copyfile, cached, self.mods_dir / file["filename"])
 
         st.mods.append({
-            "project_id": pid, "slug": slug, "title": title,
+            "project_id": pid, "slug": slug, "title": title, "mod_id": mod_id,
             "version_id": version["id"], "version": version["version_number"],
             "filename": file["filename"], "sha512": file["hashes"]["sha512"],
             "source": "modrinth", "enabled": True,
@@ -250,14 +276,15 @@ class ModManager:
             raise ServerError(f"{filename} is a {info.loader} mod but this world runs {st.loader}.")
         if info.client_only:
             raise ServerError(f"{filename} is client-only, so players install it themselves; not added.")
-        if self._find(st, info.mod_id) or self._find(st, filename):
-            raise ServerError(f"{info.mod_id} is already installed.")
+        same = self._same_mod(st, filename, info.mod_id) or self._find(st, info.mod_id)
+        if same:
+            raise ServerError(f"{info.mod_id} is already installed as {same['filename']}.")
         await self._backup(f"before installing {filename}", by)
         self.mods_dir.mkdir(exist_ok=True)
         dest = self.mods_dir / filename
         await asyncio.to_thread(shutil.copyfile, cached, dest)
         st.mods.append({
-            "project_id": None, "slug": info.mod_id, "title": info.mod_id,
+            "project_id": None, "slug": info.mod_id, "title": info.mod_id, "mod_id": info.mod_id,
             "version": info.version, "filename": filename, "sha512": _sha512(dest),
             "source": source, "enabled": True, "required_by": [],
         })

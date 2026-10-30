@@ -135,7 +135,7 @@ admins. It is never allowed to restore, delete, or change permissions.
 ### Process management
 - Server runs as `systemd --user` unit `autoadmin-mc.service` (needs `loginctl enable-linger`).
 - The bot runs as its own unit, `autoadmin-bot.service`, so either can restart independently.
-- Console access is over **RCON** (localhost only).
+- Console access is over **RCON**. Note: Minecraft binds it to all interfaces; fix in phase 6.
 
 ### Crash handling
 1. The supervisor detects an unexpected exit, or a startup that fails or times out.
@@ -281,6 +281,9 @@ AutoAdmin/
 4. ✅ **Mods + worlds**: Modrinth, fallback chain, profiles, switching, backups.
 5. **Supervisor**: crash detection, analysis turn, escalation, no-AI mode.
 6. **Hardening**: rate limits, destructive-action confirmations, end-to-end test on a real server.
+   **Console exposure**: Minecraft binds RCON to all interfaces (`0.0.0.0:25575`) unless the
+   whole server is bound to localhost. Replace RCON with a private stdin pipe (no network
+   port), or have the installer add a firewall rule.
    **Installer**: guided first-time setup that configures API keys, the Discord bot connection
    (token, guild/channel IDs), the bot service, and `loginctl enable-linger`.
 7. *(post-MVP)* In-game chat adapter; Tailnet management.
