@@ -1,7 +1,7 @@
 # AutoAdmin — Plan
 
 An LLM agent that installs, configures, runs, and maintains a single modded Minecraft
-server on an Arch Linux host, with a Discord channel as its human interface.
+server on a Linux or Windows host, with a Discord channel as its human interface.
 
 ## Scope
 
@@ -135,7 +135,8 @@ admins. It is never allowed to restore, delete, or change permissions.
 ### Process management
 - Server runs as `systemd --user` unit `autoadmin-mc.service` (needs `loginctl enable-linger`).
 - The bot runs as its own unit, `autoadmin-bot.service`, so either can restart independently.
-- Console access is over **RCON**. Note: Minecraft binds it to all interfaces; fix in phase 6.
+- Console access is over **RCON**. Note: Minecraft binds it to all interfaces; replaced by the
+  launcher's private console channel in phase 6 (see Platforms).
 
 ### Crash handling
 1. The supervisor detects an unexpected exit, or a startup that fails or times out.
@@ -275,6 +276,61 @@ Only what's needed for a decision enters the main agent's context.
   Server-side refusal fallback (`fallbacks: "default"`) is on; fallback attempts are charged at
   their own model's price.
 
+## Platforms
+
+Linux (systemd) and Windows (x64; arm64 where Temurin has builds). The OS is detected and
+configured for during first-time setup.
+
+**Launcher.** A small Python process, shipped with AutoAdmin, sits between the service
+manager and Java:
+- It starts Java and owns its stdin. The bot sends console commands to it over a private
+  local channel (Unix socket on Linux, named pipe on Windows), which replaces RCON and
+  closes the `0.0.0.0:25575` exposure. A command's output is the console lines that
+  follow it within a short window.
+- It writes the server's exit code to a file, so the supervisor can classify an exit even
+  after a bot restart.
+
+**`ProcessBackend`** interface (start, stop, state, stats, send command):
+- **Linux:** systemd `--user` unit runs the launcher; `MemoryMax` and `Nice` as before.
+- **Windows:** the bot spawns the launcher detached so it outlives the bot; memory cap via a
+  Job Object, below-normal priority class.
+
+**Other platform-specific pieces:** Temurin download by OS/arch (`.zip` + `java.exe` on
+Windows), host RAM/CPU via `psutil` instead of `/proc`. Backups (stdlib zstd), Discord, the
+agent, and mod/NeoForge installs are already portable.
+
+**Bot startup on Windows** (setup asks which; a Task Scheduler task either way, with
+restart-on-failure and no run-time limit):
+- *Logged-in only*: runs at the user's logon with their session. No admin needed.
+- *Always on*: runs at boot whether or not anyone is logged in, as the user via S4U. Needs
+  admin once to register; no password is stored. S4U can reach the internet but not network
+  shares. The Linux equivalent is `loginctl enable-linger`.
+- The bot runs under `pythonw` (no console window) and logs to `runtime/logs/bot.log`.
+
+**Firewall** (setup offers it, opt-in): detect ufw / firewalld / Windows Defender Firewall
+and open only the game port (25565/tcp). Needs sudo or admin for that one step; if declined,
+setup prints the command to run by hand.
+
+## First-time setup (`autoadmin setup`)
+
+Interactive and re-runnable. Every existing value can be kept, and kept values are re-checked.
+
+1. **Host**: detect the OS, CPU architecture, and systemd. Stop on unsupported hosts.
+   Create `config.toml` from the example if missing.
+2. **Anthropic key** (hidden input): validated with free model lookups, which also confirm
+   the configured agent and investigator models are available. If the API is unreachable,
+   offer to save without checking.
+3. **Discord token** (hidden input; portal instructions shown first time): validated via
+   `/users/@me`. Then the Message Content intent is read from the application flags;
+   if it's off, wait while the user turns it on.
+4. **Invite**: the link is pre-filled with the bot's client id and permissions 101376. Wait
+   until the bot is in a server.
+5. **Server and channel**: pick from lists, with no IDs to copy. The bot's effective channel
+   permissions (roles + overwrites) are computed, and missing ones are named.
+6. **Store**: secrets go in `.env`, created owner-only (`chmod 600`, or an ACL for the user
+   alone on Windows) and saved after each validated secret. IDs go in `config.toml`.
+7. **Background service**, **linger** (Linux), **firewall** (opt-in), as above.
+
 ## Directory layout
 
 ```
@@ -298,11 +354,9 @@ AutoAdmin/
 4. ✅ **Mods + worlds**: Modrinth, fallback chain, profiles, switching, backups.
 5. ✅ **Supervisor**: crash detection, analysis turn, escalation, no-AI mode.
 6. **Hardening**: rate limits, destructive-action confirmations, end-to-end test on a real server.
-   **Console exposure**: Minecraft binds RCON to all interfaces (`0.0.0.0:25575`) unless the
-   whole server is bound to localhost. Replace RCON with a private stdin pipe (no network
-   port), or have the installer add a firewall rule.
-   **Installer**: guided first-time setup that configures API keys, the Discord bot connection
-   (token, guild/channel IDs), the bot service, and `loginctl enable-linger`.
+   **Windows support + console exposure**: launcher process and `ProcessBackend` (see
+   Platforms), replacing RCON with the launcher's private console channel.
+   ✅ **Installer**: `autoadmin setup` (see First-time setup).
 7. *(post-MVP)* In-game chat adapter; Tailnet management.
 
 ## Open items
