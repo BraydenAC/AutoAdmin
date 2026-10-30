@@ -91,12 +91,15 @@ class FabricBuild:
     url: str
 
 
-async def resolve_fabric(mc: str) -> FabricBuild:
+async def resolve_fabric(mc: str, loader: str | None = None) -> FabricBuild:
     loaders = await get_json(f"{FABRIC_META}/versions/loader/{mc}")
     if not loaders:
         raise VersionError(f"Fabric does not support Minecraft {mc}.")
-    loader = next((x["loader"]["version"] for x in loaders if x["loader"]["stable"]),
-                  loaders[0]["loader"]["version"])
+    available = [x["loader"]["version"] for x in loaders]
+    if loader is not None and loader not in available:
+        raise VersionError(f"Fabric loader {loader} is not available for Minecraft {mc}.")
+    loader = loader or next((x["loader"]["version"] for x in loaders if x["loader"]["stable"]),
+                            available[0])
     installers = await get_json(f"{FABRIC_META}/versions/installer")
     installer = next(x["version"] for x in installers if x["stable"])
     url = f"{FABRIC_META}/versions/loader/{mc}/{loader}/{installer}/server/jar"
@@ -142,9 +145,12 @@ class NeoForgeBuild:
     installer_sha1: str
 
 
-async def resolve_neoforge(mc: str) -> NeoForgeBuild:
+async def resolve_neoforge(mc: str, version: str | None = None) -> NeoForgeBuild:
     xml = await get_text(f"{NEOFORGE_MAVEN}/maven-metadata.xml")
-    version = pick_neoforge(re.findall(r"<version>([^<]+)</version>", xml), mc)
+    available = re.findall(r"<version>([^<]+)</version>", xml)
+    if version is not None and version not in available:
+        raise VersionError(f"NeoForge {version} does not exist.")
+    version = version or pick_neoforge(available, mc)
     url = f"{NEOFORGE_MAVEN}/{version}/neoforge-{version}-installer.jar"
     sha1 = (await get_text(url + ".sha1")).strip().split()[0]
     return NeoForgeBuild(version, url, sha1)

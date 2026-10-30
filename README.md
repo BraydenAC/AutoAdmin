@@ -11,8 +11,8 @@ right Java, installs the server, configures the world, and keeps it running.
 |---|---|
 | Core: permissions, audit log, budget, agent loop | done |
 | Server lifecycle: vanilla / Fabric / NeoForge, Java, systemd, RCON | done |
-| Discord adapter | built, live test pending |
-| Mods (Modrinth) and world profiles | planned |
+| Discord adapter | done |
+| Mods (Modrinth) and world profiles, backups | done |
 | Crash supervisor | planned |
 
 ## How it works

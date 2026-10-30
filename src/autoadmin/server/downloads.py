@@ -12,18 +12,30 @@ import json
 import logging
 import os
 import shutil
+import urllib.error
 import urllib.request
 from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-USER_AGENT = "AutoAdmin/0.1 (Minecraft server admin agent; github.com/BraydenAC)"
+USER_AGENT = "AutoAdmin/0.1 (+https://github.com/BraydenAC/AutoAdmin)"
 RETRIES = 3
 CHUNK = 1 << 20
 
 
 class DownloadError(Exception):
     pass
+
+
+class NotFound(DownloadError):
+    """HTTP 404: retrying won't help."""
+
+
+def _final(e: Exception) -> Exception | None:
+    """Client errors (4xx) are permanent; return the error to raise immediately."""
+    if isinstance(e, urllib.error.HTTPError) and 400 <= e.code < 500:
+        return NotFound(str(e)) if e.code == 404 else DownloadError(str(e))
+    return None
 
 
 def _http_get(url: str, timeout: float = 60) -> urllib.request.addinfourl:
@@ -42,6 +54,8 @@ async def get_json(url: str) -> object:
         try:
             return await asyncio.to_thread(get_json_sync, url)
         except Exception as e:  # network errors, HTTP errors, bad JSON
+            if final := _final(e):
+                raise final
             last = e
             await asyncio.sleep(2 ** attempt)
     raise DownloadError(f"GET {url} failed after {RETRIES} tries: {last}")
@@ -56,6 +70,8 @@ async def get_text(url: str) -> str:
         try:
             return await asyncio.to_thread(fetch)
         except Exception as e:
+            if final := _final(e):
+                raise final
             last = e
             await asyncio.sleep(2 ** attempt)
     raise DownloadError(f"GET {url} failed after {RETRIES} tries: {last}")
@@ -96,6 +112,8 @@ class Cache:
                 await asyncio.to_thread(self._download_sync, url, dest, algo, digest)
                 return dest
             except Exception as e:
+                if final := _final(e):
+                    raise final
                 last = e
                 log.warning("download %s failed (attempt %d): %s", url, attempt + 1, e)
                 await asyncio.sleep(2 ** attempt)

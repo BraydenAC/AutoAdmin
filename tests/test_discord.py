@@ -25,7 +25,7 @@ def message(content, *, author=user(1, "Pat"), mentions=(), reply_to=None, id=50
 def test_mention_conversion():
     m = message(f"<@{BOT}> make <@!2> and <@3> admins, ping <@&7>",
                 mentions=[user(BOT, "AutoAdmin"), user(2, "Sam"), user(3, "Ada")])
-    inc, _ = to_incoming(m, BOT)
+    inc = to_incoming(m, BOT)
     assert inc.mentions_bot
     assert inc.mentions == {"2": "Sam", "3": "Ada"}
     assert inc.text == "make @Sam and @Ada admins, ping @role"
@@ -35,13 +35,13 @@ def test_mention_conversion():
 def test_reply_ping_is_not_a_mention():
     # Discord lists the replied-to user in mentions even when not typed.
     m = message("yes please", mentions=[user(BOT, "AutoAdmin"), user(2, "Sam")], reply_to=77)
-    inc, _ = to_incoming(m, BOT)
+    inc = to_incoming(m, BOT)
     assert not inc.mentions_bot and inc.mentions == {} and inc.reply_to == "77"
 
 
 def test_attachments_metadata_only():
     m = message("here", attachments=[NS(filename="mod.jar", size=1234, url="https://cdn/x")])
-    _, atts = to_incoming(m, BOT)
+    atts = to_incoming(m, BOT).attachments
     assert atts[0].filename == "mod.jar" and atts[0].size == 1234
 
 

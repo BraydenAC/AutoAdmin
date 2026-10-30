@@ -48,7 +48,7 @@ TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Runtime-relative path, e.g. server/logs/latest.log"},
+                "path": {"type": "string", "description": "Runtime-relative path, e.g. worlds/<name>/logs/latest.log"},
                 "start_line": {"type": "integer", "description": "1-based first line"},
                 "max_lines": {"type": "integer", "description": f"At most {MAX_LINES}"},
             },
@@ -103,7 +103,10 @@ class Investigator:
     def __init__(self, services: Services, client: Any | None = None):
         self.services = services
         self.client = client or anthropic.AsyncAnthropic()
-        self.server_dir = services.jail.path("server")
+
+    @property
+    def server_dir(self) -> Path:
+        return self.services.server.dir
 
     # -- read-only file access ---------------------------------------------------
 

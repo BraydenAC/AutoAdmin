@@ -29,6 +29,7 @@ from .systemd import Unit, UnitSpec, linger_enabled
 Progress = Callable[[str], Awaitable[None]]
 
 LOADERS = ("vanilla", "fabric", "neoforge")
+WORLD_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 DONE = re.compile(r"\]: Done \(\d+[.,]\d+s\)!")
 EULA_NEEDED = re.compile(r"You need to agree to the EULA")
 EULA_URL = "https://aka.ms/MinecraftEULA"
@@ -60,6 +61,7 @@ class InstallState:
     memory_mb: int
     eula_accepted_by: str | None = None
     eula_accepted_at: float | None = None
+    mods: list[dict] = field(default_factory=list)
     extra: dict = field(default_factory=dict)
 
 
@@ -71,28 +73,120 @@ class ServerManager:
     def __init__(self, config: Config, jail: Jail, incidents: IncidentStore):
         self.cfg = config.server
         self.jail = jail
-        self.dir = jail.path("server")
+        self.worlds_root = jail.path("worlds")
         self.cache = Cache(jail.path("cache"))
         self.incidents = incidents
         self.unit = Unit(self.cfg.unit_name)
-        self._state_path = self.dir / "autoadmin.json"
+        self._active_file = jail.path("active_world")
+        self._eula_file = jail.path("eula.json")
         self._lock = asyncio.Lock()
+        self._migrate_single_server()
 
-    # -- state -------------------------------------------------------------------
+    def _migrate_single_server(self) -> None:
+        """Phase 2 kept one install in runtime/server; it becomes the world 'world'."""
+        old = self.jail.path("server")
+        if (old / "autoadmin.json").exists() and not self.worlds_root.exists():
+            self.worlds_root.mkdir(parents=True)
+            os.replace(old, self.worlds_root / "world")
+            self._active_file.write_text("world")
+            st = self.state()
+            if st and st.eula_accepted_by:
+                self._eula_file.write_text(json.dumps(
+                    {"accepted_by": st.eula_accepted_by, "accepted_at": st.eula_accepted_at}))
 
-    def state(self) -> InstallState | None:
-        if not self._state_path.exists():
+    # -- worlds and state ----------------------------------------------------------
+
+    def world_dir(self, name: str) -> Path:
+        if not WORLD_NAME.fullmatch(name):
+            raise ServerError("World names are 1-32 characters: lowercase letters, digits, - and _.")
+        return self.jail.path("worlds", name)
+
+    def active_world(self) -> str | None:
+        try:
+            name = self._active_file.read_text().strip()
+        except FileNotFoundError:
             return None
-        return InstallState(**json.loads(self._state_path.read_text()))
+        return name if name and (self.worlds_root / name / "autoadmin.json").exists() else None
 
-    def _save(self, st: InstallState) -> None:
-        self._state_path.write_text(json.dumps(asdict(st), indent=2))
+    @property
+    def dir(self) -> Path:
+        name = self.active_world()
+        if name is None:
+            raise ServerError("No world is selected. Create one first.")
+        return self.worlds_root / name
+
+    def state(self, world: str | None = None) -> InstallState | None:
+        name = world or self.active_world()
+        if name is None:
+            return None
+        path = self.worlds_root / name / "autoadmin.json"
+        if not path.exists():
+            return None
+        return InstallState(**json.loads(path.read_text()))
+
+    def save_state(self, st: InstallState, world: str | None = None) -> None:
+        name = world or self.active_world()
+        (self.worlds_root / name / "autoadmin.json").write_text(json.dumps(asdict(st), indent=2))
+
+    _save = save_state
 
     def _require_installed(self) -> InstallState:
         st = self.state()
         if st is None:
-            raise ServerError("No server is installed yet.")
+            raise ServerError("No world is installed yet.")
         return st
+
+    def eula_record(self) -> dict | None:
+        try:
+            return json.loads(self._eula_file.read_text())
+        except FileNotFoundError:
+            return None
+
+    def _write_eula_txt(self, target: Path) -> None:
+        rec = self.eula_record()
+        if rec:
+            (target / "eula.txt").write_text(
+                f"# Accepted by {rec['accepted_by']} via AutoAdmin\n# {EULA_URL}\neula=true\n")
+
+    def list_worlds(self) -> list[dict]:
+        active = self.active_world()
+        out = []
+        for d in sorted(self.worlds_root.glob("*/autoadmin.json")) if self.worlds_root.exists() else []:
+            st = self.state(d.parent.name)
+            out.append({
+                "name": d.parent.name,
+                "active": d.parent.name == active,
+                "minecraft_version": st.minecraft_version,
+                "loader": st.loader if not st.loader_version else f"{st.loader} {st.loader_version}",
+                "mods": len(st.mods),
+                "world_generated": (d.parent / properties.read(
+                    d.parent / "server.properties").get("level-name", "world")).exists(),
+            })
+        return out
+
+    async def switch_world(self, name: str) -> str:
+        target = self.world_dir(name)
+        if not (target / "autoadmin.json").exists():
+            raise ServerError(f"There is no world named '{name}'.")
+        if await self.running():
+            raise ServerError("Stop the server before switching worlds.")
+        self._active_file.write_text(name)
+        st = self.state(name)
+        return f"Switched to '{name}' (Minecraft {st.minecraft_version}, {st.loader})."
+
+    async def delete_world(self, name: str) -> str:
+        target = self.world_dir(name)
+        if not (target / "autoadmin.json").exists():
+            raise ServerError(f"There is no world named '{name}'.")
+        if name == self.active_world() and await self.running():
+            raise ServerError("Stop the server before deleting the active world.")
+        await asyncio.to_thread(shutil.rmtree, target)
+        if name == self.active_world() or not self._active_points_somewhere():
+            self._active_file.unlink(missing_ok=True)
+        return f"Deleted world '{name}'. Its backups were kept."
+
+    def _active_points_somewhere(self) -> bool:
+        return self.active_world() is not None
 
     async def running(self) -> bool:
         return (await self.unit.state()).running
@@ -127,45 +221,55 @@ class ServerManager:
     # -- install -----------------------------------------------------------------
 
     async def install(self, mc_version: str, loader: str, requested_by: str,
-                      progress: Progress = _noop) -> str:
+                      progress: Progress = _noop, *, world: str,
+                      loader_version: str | None = None, memory_mb: int | None = None) -> str:
+        """Install a server into a new world folder. `loader_version` pins the loader
+        (used when rebuilding a world from a backup)."""
         if loader not in LOADERS:
             raise ServerError(f"Unknown loader '{loader}'. Use one of: {', '.join(LOADERS)}.")
+        target = self.world_dir(world)
+        if target.exists() and any(target.iterdir()):
+            raise ServerError(f"A world named '{world}' already exists.")
         async with self._lock:
-            if await self.running():
-                raise ServerError("Stop the server before installing a different version.")
             try:
                 mc = await versions.resolve_minecraft(mc_version)
             except versions.VersionError as e:
                 raise ServerError(str(e))
 
             java = await self.ensure_java(mc.java_major, progress)
-            previous = self._set_aside_previous()
-
-            self.dir.mkdir(parents=True, exist_ok=True)
-            loader_version: str | None = None
+            tmp = target.with_name(target.name + ".installing")
+            shutil.rmtree(tmp, ignore_errors=True)
+            tmp.mkdir(parents=True)
+            pinned = loader_version
             try:
                 if loader == "vanilla":
                     await progress(f"Downloading Minecraft {mc.id} server…")
-                    await self.cache.fetch_to(mc.server_url, self.dir / "server.jar",
+                    await self.cache.fetch_to(mc.server_url, tmp / "server.jar",
                                               algo="sha1", digest=mc.server_sha1)
                     launch = ["-jar", "server.jar"]
                 elif loader == "fabric":
-                    build = await versions.resolve_fabric(mc.id)
+                    build = await versions.resolve_fabric(mc.id, pinned)
                     loader_version = build.loader
                     await progress(f"Downloading Fabric loader {build.loader} for {mc.id}…")
-                    await self.cache.fetch_to(build.url, self.dir / "fabric-server-launch.jar")
+                    await self.cache.fetch_to(build.url, tmp / "fabric-server-launch.jar")
                     launch = ["-jar", "fabric-server-launch.jar"]
                 else:
-                    build = await versions.resolve_neoforge(mc.id)
+                    build = await versions.resolve_neoforge(mc.id, pinned)
                     loader_version = build.version
                     await progress(f"Installing NeoForge {build.version} (takes about a minute)…")
-                    await self._run_neoforge_installer(java, build)
+                    await self._run_neoforge_installer(java, build, tmp)
                     launch = ["@user_jvm_args.txt",
                               f"@libraries/net/neoforged/neoforge/{build.version}/unix_args.txt"]
+                if loader == "vanilla":
+                    loader_version = None
             except versions.VersionError as e:
+                shutil.rmtree(tmp, ignore_errors=True)
                 raise ServerError(str(e))
+            except BaseException:
+                shutil.rmtree(tmp, ignore_errors=True)
+                raise
 
-            properties.write(self.dir / "server.properties", {
+            properties.write(tmp / "server.properties", {
                 "enable-rcon": "true",
                 "rcon.port": str(self.cfg.rcon_port),
                 "rcon.password": (pw := secrets.token_urlsafe(18)),
@@ -176,29 +280,34 @@ class ServerManager:
             st = InstallState(
                 minecraft_version=mc.id, loader=loader, loader_version=loader_version,
                 java_major=mc.java_major, launch=launch, installed_at=time.time(),
-                installed_by=requested_by, rcon_password=pw, memory_mb=self.cfg.memory_mb)
-            self._save(st)
+                installed_by=requested_by, rcon_password=pw,
+                memory_mb=memory_mb or self.cfg.memory_mb)
+            (tmp / "autoadmin.json").write_text(json.dumps(asdict(st), indent=2))
+            self._write_eula_txt(tmp)
+            shutil.rmtree(target, ignore_errors=True)
+            os.replace(tmp, target)
+            became_active = self.active_world() is None
+            if became_active:
+                self._active_file.write_text(world)
 
         desc = f"Minecraft {mc.id}" + (f" with {loader} {loader_version}" if loader_version else " (vanilla)")
-        note = f" Previous install moved to {previous}." if previous else ""
-        return f"Installed {desc}, Java {mc.java_major}.{note} EULA not yet accepted."
+        notes = [f"Installed world '{world}': {desc}, Java {mc.java_major}."]
+        notes.append("It is now the active world." if became_active
+                     else "Switch to it to use it.")
+        if not self.eula_record():
+            notes.append("EULA not yet accepted.")
+        return " ".join(notes)
 
-    def _set_aside_previous(self) -> str | None:
-        if not self.dir.exists() or not any(self.dir.iterdir()):
-            return None
-        target = self.jail.path(f"server.old-{time.strftime('%Y%m%d-%H%M%S')}")
-        os.replace(self.dir, target)
-        return target.name
-
-    async def _run_neoforge_installer(self, java: Path, build: versions.NeoForgeBuild) -> None:
+    async def _run_neoforge_installer(self, java: Path, build: versions.NeoForgeBuild,
+                                      target: Path) -> None:
         installer = await self.cache.fetch(build.installer_url, algo="sha1",
                                            digest=build.installer_sha1)
         log_path = self.jail.path("logs", f"install-neoforge-{build.version}-{int(time.time())}.log")
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("wb") as log:
             proc = await asyncio.create_subprocess_exec(
-                str(java), "-jar", str(installer), "--installServer", str(self.dir),
-                cwd=self.dir, stdout=log, stderr=asyncio.subprocess.STDOUT)
+                str(java), "-jar", str(installer), "--installServer", str(target),
+                cwd=target, stdout=log, stderr=asyncio.subprocess.STDOUT)
             try:
                 code = await asyncio.wait_for(proc.wait(), self.cfg.install_timeout_s)
             except TimeoutError:
@@ -216,12 +325,11 @@ class ServerManager:
     # -- configuration -------------------------------------------------------------
 
     def accept_eula(self, accepted_by: str) -> str:
-        st = self._require_installed()
-        (self.dir / "eula.txt").write_text(
-            f"# Accepted by {accepted_by} via AutoAdmin at {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"# {EULA_URL}\neula=true\n")
-        st.eula_accepted_by, st.eula_accepted_at = accepted_by, time.time()
-        self._save(st)
+        """Acceptance is recorded once and applied to every world."""
+        self._eula_file.write_text(json.dumps({"accepted_by": accepted_by,
+                                               "accepted_at": time.time()}))
+        for d in self.worlds_root.glob("*/autoadmin.json") if self.worlds_root.exists() else []:
+            self._write_eula_txt(d.parent)
         return f"EULA accepted by {accepted_by}."
 
     def get_properties(self) -> dict[str, str]:
@@ -342,11 +450,13 @@ class ServerManager:
         unit = await self.unit.state()
         info = {
             "installed": True,
+            "world": self.active_world(),
             "minecraft_version": st.minecraft_version,
             "loader": st.loader if not st.loader_version else f"{st.loader} {st.loader_version}",
             "java": st.java_major,
             "memory_mb": st.memory_mb,
-            "eula_accepted": st.eula_accepted_by is not None,
+            "eula_accepted": self.eula_record() is not None,
+            "mods": len(st.mods),
             "state": "running" if unit.running else "stopped",
             "survives_logout": await linger_enabled(),
         }

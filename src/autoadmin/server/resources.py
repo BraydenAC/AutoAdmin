@@ -55,16 +55,17 @@ def host() -> dict:
 
 
 def storage(runtime: Path) -> dict:
-    server = runtime / "server"
-    level = properties.read(server / "server.properties").get("level-name", "world")
-    world = server / level
-    world_mb = _dir_size(world) / MB if world.exists() else 0
-    server_mb = _dir_size(server) / MB if server.exists() else 0
-    old = sum(_dir_size(p) for p in runtime.glob("server.old-*")) / MB
+    worlds_root = runtime / "worlds"
+    saves = installs = 0.0
+    for wdir in (p for p in worlds_root.glob("*") if p.is_dir()) if worlds_root.exists() else []:
+        level = properties.read(wdir / "server.properties").get("level-name", "world")
+        save = _dir_size(wdir / level) / MB if (wdir / level).exists() else 0
+        saves += save
+        installs += _dir_size(wdir) / MB - save
     sizes = {
-        "world": world_mb,
-        "server_install_excl_world": server_mb - world_mb,
-        "previous_installs": old,
+        "world_saves": saves,
+        "server_installs_and_mods": installs,
+        "backups": _dir_size(runtime / "backups") / MB,
         "java_runtimes": _dir_size(runtime / "java") / MB,
         "download_cache": _dir_size(runtime / "cache") / MB,
         "logs_and_incidents": (_dir_size(runtime / "logs") + _dir_size(runtime / "incidents")) / MB,

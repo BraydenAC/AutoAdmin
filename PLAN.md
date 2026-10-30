@@ -159,6 +159,13 @@ admins. It is never allowed to restore, delete, or change permissions.
 
 ## World profiles
 
+Implemented as one complete server folder per world: `runtime/worlds/<name>/` holds the
+install, `mods/`, configs, `server.properties`, the save, and `autoadmin.json` (version,
+loader, pinned loader version, Java, heap, installed mods). `runtime/active_world` names the
+world the service runs. EULA acceptance is recorded once (`runtime/eula.json`) and applied to
+every world. Destructive actions (delete world, restore, delete backup) use a two-step
+confirmation: same person, later message.
+
 ```
 runtime/worlds/<profile>/
   profile.toml   # mc_version, loader, loader_version, mods (modrinth ids + hashes), properties
@@ -170,6 +177,11 @@ runtime/worlds/<profile>/
 - Selecting a world at start-up: "start the server with the `skyblock` world".
 
 ## Mods
+
+Client-only mods are refused: Modrinth's `server_side: unsupported`, or `"environment":
+"client"` in a Fabric jar (NeoForge jars have no reliable marker). Releases are preferred over
+betas. Required dependencies are installed and tracked (`required_by`), and removing a mod
+something else needs is refused. Disabling moves the jar to `mods/disabled/`.
 
 Resolution order:
 1. **Modrinth API**, split between the agent and code:
@@ -211,7 +223,12 @@ Only what's needed for a decision enters the main agent's context.
     under 4 GB.
   - systemd guards: `MemoryMax` = heap + 1.5 GB, `Nice=5`.
   - Downloads: shared cache in `runtime/cache/` keyed by checksum, 3 retries with backoff.
-  - Backup disk use: decide in phase 4.
+  - Backups (phase 4): world data, mods, config, server.properties and the profile, as
+    `.tar.zst` in `runtime/backups/<world>/`. Server jars/libraries are excluded and rebuilt
+    from the profile when restoring a deleted world. Automatic backups (before mod changes and
+    restores) keep the newest **3** per world; the owner can change this from chat. Manual
+    backups are kept until deleted. Live backups pause world saving (`save-off`/`save-all
+    flush`/`save-on`).
 - **Verified signals** (from real runs): NeoForge installer exits 0 and prints
   `The server installed successfully`; on failure it exits 1 and prints
   `There was an error during installation` after the stack trace. Fabric needs no installer
@@ -259,12 +276,15 @@ AutoAdmin/
    agent loop, budget tracking, CLI harness (fake Discord) for testing.
 2. ✅ **Server lifecycle**: manifest/Java provisioning, Fabric + NeoForge install, EULA,
    properties, systemd unit, RCON, start/stop/status.
-3. 🔶 **Discord adapter** (built; live test pending): ready message, mention/reply conversations, double-message ping,
+3. ✅ **Discord adapter**: ready message, mention/reply conversations, double-message ping,
    attachments, owner bootstrap + admin grants.
-4. **Mods + worlds**: Modrinth, fallback chain, profiles, switching, backups.
+4. ✅ **Mods + worlds**: Modrinth, fallback chain, profiles, switching, backups.
 5. **Supervisor**: crash detection, analysis turn, escalation, no-AI mode.
 6. **Hardening**: rate limits, destructive-action confirmations, end-to-end test on a real server.
+   **Installer**: guided first-time setup that configures API keys, the Discord bot connection
+   (token, guild/channel IDs), the bot service, and `loginctl enable-linger`.
 7. *(post-MVP)* In-game chat adapter; Tailnet management.
 
 ## Open items
-- Machine resource decisions (see Context discipline), at phase 2 implementation.
+- Conversations are in memory only; a bot restart forgets them (phase 6).
+- Crash recovery's `disable mod` needs the system principal to reach `mods(disable)` (phase 5).

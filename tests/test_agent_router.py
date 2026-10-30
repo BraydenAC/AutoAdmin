@@ -180,4 +180,4 @@ async def test_overview_views(services):
     res = json.loads((await reg.execute(ToolContext(USER, services), "access_overview",
                                         {"view": "resources"}))[0])
     assert res["host"]["cpu_cores"] >= 1 and res["server_process"] == {"running": False}
-    assert set(res["runtime_mb"]) >= {"world", "java_runtimes", "download_cache", "total"}
+    assert set(res["runtime_mb"]) >= {"world_saves", "backups", "java_runtimes", "total"}

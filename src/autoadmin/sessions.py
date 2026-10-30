@@ -29,6 +29,14 @@ class IncomingMessage:
     mentions: dict[str, str]        # user id -> name, excluding the bot
     mentions_bot: bool
     reply_to: str | None = None
+    attachments: list[Attachment] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class Attachment:
+    filename: str
+    size: int
+    url: str
 
 
 @dataclass
@@ -98,6 +106,9 @@ class Router:
         head = f"[from {msg.author.name} id={msg.author.id} role={role}"
         if msg.mentions:
             head += " | mentions: " + ", ".join(f"{n} id={i}" for i, n in msg.mentions.items())
+        if msg.attachments:
+            head += " | attachments: " + ", ".join(
+                f"{a.filename} ({a.size / 1024 / 1024:.1f} MB)" for a in msg.attachments)
         return head + "]"
 
     async def handle(self, msg: IncomingMessage, send: Send) -> None:
@@ -113,6 +124,9 @@ class Router:
 
         async with conv.lock:
             conv.last_active = time.time()
+            uploads = conv.state.setdefault("attachments", {})
+            for a in msg.attachments:
+                uploads[a.filename] = {"url": a.url, "by": msg.author.id, "size": a.size}
             last_bot_id: str | None = None
 
             async def emit(text: str) -> None:

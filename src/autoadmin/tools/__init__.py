@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from . import access, server
+from . import access, server, worlds
 from .registry import Registry, Tool, ToolContext, ToolDenied, ToolError
 
 if TYPE_CHECKING:
@@ -13,6 +13,7 @@ def build_registry(investigator: Investigator | None = None) -> Registry:
     r = Registry()
     access.register(r)
     server.register(r, investigator)
+    worlds.register(r)
     return r
 
 

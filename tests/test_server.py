@@ -170,12 +170,13 @@ async def test_rcon_roundtrip_and_bad_password():
 
 # -- startup detection ---------------------------------------------------------------------
 
-def _installed(services) -> None:
-    services.server.dir.mkdir(parents=True, exist_ok=True)
-    services.server._save(InstallState(
-        minecraft_version="1.21.1", loader="fabric", loader_version="0.20.1", java_major=21,
+def _installed(services, world: str = "world", loader: str = "fabric") -> None:
+    (services.server.worlds_root / world).mkdir(parents=True, exist_ok=True)
+    services.jail.path("active_world").write_text(world)
+    services.server.save_state(InstallState(
+        minecraft_version="1.21.1", loader=loader, loader_version="0.20.1", java_major=21,
         launch=["-jar", "fabric-server-launch.jar"], installed_at=0, installed_by="x",
-        rcon_password="pw", memory_mb=6144))
+        rcon_password="pw", memory_mb=6144), world)
 
 
 class FakeUnit:
@@ -218,7 +219,7 @@ async def test_startup_failure_creates_incident(services, fast):
     assert outcome is StartOutcome.FAILED
     inc_id = msg.split("incident_id: ")[1].split()[0]
     inc = services.incidents.get(inc_id)
-    assert "mod foo needs bar" in inc.excerpt and "server/console.log" in inc.log_files
+    assert "mod foo needs bar" in inc.excerpt and "worlds/world/console.log" in inc.log_files
 
 
 async def test_set_memory_guard(services):
@@ -245,13 +246,14 @@ async def test_eula_needs_a_later_human_message(services):
     out, err = await reg.execute(later, "eula", accept)
     assert not err
     assert "eula=true" in (services.server.dir / "eula.txt").read_text()
-    assert services.server.state().eula_accepted_by.startswith("Ada")
+    assert services.server.eula_record()["accepted_by"].startswith("Ada")
 
 
 async def test_install_needs_worlds_manage(services):
     out, err = await build_registry().execute(
-        ToolContext(USER, services), "install_server",
-        {"minecraft_version": "1.21.1", "loader": "fabric"})
+        ToolContext(USER, services), "worlds",
+        {"action": "create", "name": "w", "minecraft_version": "1.21.1", "loader": "fabric",
+         "backup_id": "", "count": 0})
     assert err and "worlds.manage" in out
 
 
@@ -266,8 +268,8 @@ async def test_investigator_reads_redacted_and_reports(services):
     inc = services.incidents.create("start_failed", "Server exited.", "excerpt", [sdir / "logs" / "latest.log"])
 
     client = FakeClient(
-        response(tool_use("grep", {"path": "server/logs/latest.log", "pattern": "Caused by"}, "a"),
-                 tool_use("read_file", {"path": "server/server.properties", "start_line": 1,
+        response(tool_use("grep", {"path": "worlds/world/logs/latest.log", "pattern": "Caused by"}, "a"),
+                 tool_use("read_file", {"path": "worlds/world/server.properties", "start_line": 1,
                                         "max_lines": 10}, "b"),
                  tool_use("read_file", {"path": "permissions.json", "start_line": 1,
                                         "max_lines": 10}, "c"),

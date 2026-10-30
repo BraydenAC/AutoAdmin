@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
 from typing import Any
 
 import discord
@@ -14,7 +13,7 @@ from .agent.investigator import Investigator
 from .auth import Principal
 from .config import Config
 from .services import Services
-from .sessions import IncomingMessage, Outgoing, Router
+from .sessions import Attachment, IncomingMessage, Outgoing, Router
 from .tools import build_registry
 
 log = logging.getLogger(__name__)
@@ -24,14 +23,7 @@ USER_MENTION = re.compile(r"<@!?(\d+)>")
 ROLE_MENTION = re.compile(r"<@&(\d+)>")
 
 
-@dataclass(frozen=True)
-class Attachment:
-    filename: str
-    size: int
-    url: str
-
-
-def to_incoming(message: Any, bot_id: int) -> tuple[IncomingMessage, list[Attachment]]:
+def to_incoming(message: Any, bot_id: int) -> IncomingMessage:
     """Convert a Discord message. Only mentions typed in the text count as mentions;
     Discord also lists the replied-to user, which must not grant them anything."""
     content: str = message.content
@@ -53,7 +45,7 @@ def to_incoming(message: Any, bot_id: int) -> tuple[IncomingMessage, list[Attach
     attachments = [Attachment(a.filename, a.size, a.url) for a in message.attachments]
     return IncomingMessage(
         id=str(message.id), author=author, text=text, mentions=mentions,
-        mentions_bot=bot_id in typed, reply_to=reply_to), attachments
+        mentions_bot=bot_id in typed, reply_to=reply_to, attachments=attachments)
 
 
 def split_message(text: str, limit: int = DISCORD_LIMIT) -> list[str]:
@@ -144,7 +136,7 @@ class AutoAdminBot(discord.Client):
         if (self.send is None or message.author.bot or message.guild is None
                 or message.channel.id != self.cfg.channel_id):
             return
-        incoming, _attachments = to_incoming(message, self.user.id)
+        incoming = to_incoming(message, self.user.id)
         if not self.router.accepts(incoming):
             return
         async with message.channel.typing():

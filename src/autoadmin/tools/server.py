@@ -7,7 +7,7 @@ import shlex
 from typing import TYPE_CHECKING, Any
 
 from ..auth import Perm
-from ..server.manager import EULA_URL, LOADERS, ServerError, StartOutcome
+from ..server.manager import EULA_URL, ServerError, StartOutcome
 from .registry import Registry, ToolContext, ToolError
 
 if TYPE_CHECKING:
@@ -71,22 +71,6 @@ def register(r: Registry, investigator: Investigator | None = None) -> None:
             permission=Perm.CHAT)
     async def server_status(ctx: ToolContext) -> str:
         return json.dumps(await ctx.services.server.status())
-
-    @r.tool("install_server",
-            "Install a Minecraft server. Blocks until done. Downloads the right Java automatically. "
-            "Any existing install is moved aside, not deleted. The server must be stopped.",
-            permission=Perm.WORLDS_MANAGE,
-            properties={
-                "minecraft_version": {"type": "string",
-                                      "description": "e.g. 1.21.1, 26.3, 'latest', 'latest-snapshot'"},
-                "loader": {"type": "string", "enum": list(LOADERS)},
-            })
-    async def install_server(ctx: ToolContext, minecraft_version: str, loader: str) -> str:
-        try:
-            return await ctx.services.server.install(
-                minecraft_version, loader, str(ctx.principal), ctx.say)
-        except ServerError as e:
-            raise _wrap(e)
 
     @r.tool("eula",
             "Minecraft EULA acceptance in two steps. action=request: returns the link to show the "
