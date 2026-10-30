@@ -53,6 +53,15 @@ class ServerConfig:
 
 
 @dataclass(frozen=True)
+class SupervisorConfig:
+    poll_interval_s: int = 5
+    stable_uptime_s: int = 1800     # crash history resets after this much clean uptime
+    max_crashes: int = 5            # escalate past this many crashes...
+    window_s: int = 3600            # ...within this window
+    autostart: bool = True          # start the server on bot startup if it should be running
+
+
+@dataclass(frozen=True)
 class DiscordConfig:
     guild_id: int = 0
     channel_id: int = 0
@@ -68,6 +77,7 @@ class Config:
     discord: DiscordConfig
     investigator: InvestigatorConfig = InvestigatorConfig()
     server: ServerConfig = ServerConfig()
+    supervisor: SupervisorConfig = SupervisorConfig()
     cli_owner: str = "owner"
     source: Path | None = field(default=None, compare=False)
 
@@ -87,6 +97,7 @@ class Config:
             discord=DiscordConfig(**raw.get("discord", {})),
             investigator=InvestigatorConfig(**raw.get("investigator", {})),
             server=ServerConfig(**raw.get("server", {})),
+            supervisor=SupervisorConfig(**raw.get("supervisor", {})),
             cli_owner=raw.get("cli", {}).get("owner", "owner"),
             source=path,
         )

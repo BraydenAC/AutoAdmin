@@ -46,8 +46,9 @@ def console_permission(args: dict[str, Any]) -> Perm:
 MEMORY_KEY = "memory-mb"
 
 
-def _settings_permission(args: dict[str, Any]) -> Perm:
-    return Perm.CONFIG_EDIT if args.get("changes") else Perm.CHAT
+def _settings_permission(args: dict[str, Any]) -> Perm | tuple[Perm, ...]:
+    # Crash recovery may adjust settings (e.g. memory) as a reversible fix.
+    return (Perm.CONFIG_EDIT, Perm.CRASH_RECOVERY) if args.get("changes") else Perm.CHAT
 
 
 def _wrap(e: ServerError) -> ToolError:

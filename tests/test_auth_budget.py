@@ -90,3 +90,12 @@ def test_per_user_limit_and_unblock_reset(services):
     perms.block(USER.id)
     perms.unblock(USER.id)
     assert not b.over_user_limit(USER)            # counter reset
+
+
+def test_dated_model_names_use_base_pricing(services):
+    from autoadmin.config import Price
+    services.budget.pricing["claude-haiku-4-5"] = Price(1.0, 5.0, 0.1, 1.25)
+    services.budget.pricing["claude-opus-4-8"] = Price(5.0, 25.0, 0.5, 6.25)
+    r = response(tokens=1_000_000)
+    r.model = "claude-haiku-4-5-20251001"
+    assert services.budget.record(OWNER, r) == pytest.approx(1.0)

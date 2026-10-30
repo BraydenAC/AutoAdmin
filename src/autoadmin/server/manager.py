@@ -24,7 +24,7 @@ from . import properties, versions
 from .downloads import Cache
 from .incidents import Incident, IncidentStore, excerpt_failure, read_lines
 from .rcon import Rcon, RconError
-from .systemd import Unit, UnitSpec, linger_enabled
+from .systemd import Unit, UnitSpec, UnitState, linger_enabled
 
 Progress = Callable[[str], Awaitable[None]]
 
@@ -79,6 +79,7 @@ class ServerManager:
         self.unit = Unit(self.cfg.unit_name)
         self._active_file = jail.path("active_world")
         self._eula_file = jail.path("eula.json")
+        self._desired_file = jail.path("server_desired")
         self._lock = asyncio.Lock()
         self._migrate_single_server()
 
@@ -366,6 +367,34 @@ class ServerManager:
         self._save(st)
         return f"Server memory set to {mb} MB; takes effect on next start."
 
+    # -- desired state (read by the supervisor) ---------------------------------------
+
+    @property
+    def desired(self) -> str:
+        """'running' after a successful start, 'stopped' after a stop."""
+        try:
+            return self._desired_file.read_text().strip() or "stopped"
+        except FileNotFoundError:
+            return "stopped"
+
+    def set_desired(self, value: str) -> None:
+        self._desired_file.write_text(value)
+
+    @property
+    def busy(self) -> bool:
+        """True while a start/stop/install holds the lock (not a crash, whatever it looks like)."""
+        return self._lock.locked()
+
+    def crash_incident(self, unit: UnitState) -> Incident:
+        why = {"oom-kill": "killed for exceeding its memory cap (systemd MemoryMax)",
+               "signal": "killed by a signal", "core-dump": "dumped core",
+               "exit-code": f"exited with status {unit.exit_status}"}.get(
+            unit.result, f"stopped unexpectedly ({unit.result or 'unknown'})")
+        st = self.state()
+        summary = (f"Server crashed: {why}. World '{self.active_world()}', heap "
+                   f"{st.memory_mb if st else '?'} MB.")
+        return self._incident("crash", summary, read_lines(self.dir / "console.log"))
+
     # -- lifecycle -------------------------------------------------------------------
 
     def _rcon(self, st: InstallState) -> Rcon:
@@ -393,6 +422,7 @@ class ServerManager:
             await asyncio.sleep(1)
             lines = read_lines(console)
             if any(DONE.search(l) for l in lines):
+                self.set_desired("running")
                 return StartOutcome.READY, f"Server is up ({time.time() - started:.0f}s)."
             state = await self.unit.state()
             if not state.running:
@@ -419,6 +449,7 @@ class ServerManager:
     async def stop(self) -> str:
         async with self._lock:
             st = self._require_installed()
+            self.set_desired("stopped")   # before stopping, so it never looks like a crash
             if not await self.running():
                 return "The server isn't running."
             try:

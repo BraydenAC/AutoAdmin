@@ -74,6 +74,10 @@ class Budget:
     def _price(self, model: str) -> Price:
         if model in self.pricing:
             return self.pricing[model]
+        # Responses may name a dated snapshot, e.g. claude-haiku-4-5-20251001.
+        prefixes = [k for k in self.pricing if model.startswith(k + "-")]
+        if prefixes:
+            return self.pricing[max(prefixes, key=len)]
         log.warning("no pricing for %s; charging at the most expensive configured rate", model)
         return max(self.pricing.values(), key=lambda p: p.output)
 

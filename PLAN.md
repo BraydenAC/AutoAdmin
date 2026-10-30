@@ -157,6 +157,23 @@ admins. It is never allowed to restore, delete, or change permissions.
 8. The crash chain resets after a stable uptime period (configurable, e.g. 30 min).
 9. Every autonomous action is posted to the channel briefly.
 
+Implementation notes (phase 5):
+- The server records a desired state: `running` after a successful start, `stopped` before
+  any stop. A crash is "desired running, unit not running, no start/stop in progress".
+- A clean exit (status 0) with desired `running` means someone ran `/stop` in game: the
+  supervisor marks it stopped and doesn't restart.
+- systemd `oom-kill` results are named in the incident ("killed for exceeding its memory cap").
+- The investigator returns a `cause_key` (e.g. `mod-crash:create`, `oom`) so "same cause
+  twice" is an exact comparison.
+- The fix turn runs as `system`, which may only toggle mods and change settings
+  (`system.crash_recovery`); it can't install, delete, or restore.
+- A failed restart is treated as the next crash in the chain, so the guards still apply.
+- Escalation pauses auto-restart; replying to the escalation message starts a conversation
+  that already contains the incident and report. Supervision resumes once the server is
+  started again.
+- Auto-start: on bot startup the server is started if its desired state is `running`.
+- State (crash chain, escalation) persists in `runtime/supervisor.json`.
+
 ## World profiles
 
 Implemented as one complete server folder per world: `runtime/worlds/<name>/` holds the
@@ -279,7 +296,7 @@ AutoAdmin/
 3. ✅ **Discord adapter**: ready message, mention/reply conversations, double-message ping,
    attachments, owner bootstrap + admin grants.
 4. ✅ **Mods + worlds**: Modrinth, fallback chain, profiles, switching, backups.
-5. **Supervisor**: crash detection, analysis turn, escalation, no-AI mode.
+5. ✅ **Supervisor**: crash detection, analysis turn, escalation, no-AI mode.
 6. **Hardening**: rate limits, destructive-action confirmations, end-to-end test on a real server.
    **Console exposure**: Minecraft binds RCON to all interfaces (`0.0.0.0:25575`) unless the
    whole server is bound to localhost. Replace RCON with a private stdin pipe (no network
@@ -290,4 +307,3 @@ AutoAdmin/
 
 ## Open items
 - Conversations are in memory only; a bot restart forgets them (phase 6).
-- Crash recovery's `disable mod` needs the system principal to reach `mods(disable)` (phase 5).

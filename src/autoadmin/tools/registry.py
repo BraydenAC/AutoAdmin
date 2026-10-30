@@ -56,7 +56,9 @@ class ToolContext:
 
 
 Handler = Callable[..., Awaitable[str]]
-PermSpec = Perm | Callable[[dict[str, Any]], Perm] | None
+# A tuple means "any one of these permissions".
+PermResult = Perm | tuple[Perm, ...]
+PermSpec = PermResult | Callable[[dict[str, Any]], PermResult] | None
 
 
 @dataclass
@@ -67,7 +69,7 @@ class Tool:
     permission: PermSpec
     handler: Handler
 
-    def required_perm(self, args: dict[str, Any]) -> Perm | None:
+    def required_perm(self, args: dict[str, Any]) -> PermResult | None:
         if callable(self.permission) and not isinstance(self.permission, Perm):
             return self.permission(args)
         return self.permission
@@ -131,7 +133,9 @@ class Registry:
             audit.record(principal=who, tool=name, args=args, allowed=False, result=str(e))
             return str(e), True
         if perm is not None:
-            decision = ctx.services.perms.check(ctx.principal, perm)
+            options = perm if isinstance(perm, tuple) else (perm,)
+            decisions = [ctx.services.perms.check(ctx.principal, p) for p in options]
+            decision = next((d for d in decisions if d.allowed), decisions[0])
             if not decision.allowed:
                 msg = f"DENIED for {ctx.principal.name}: {decision.reason}"
                 audit.record(principal=who, tool=name, args=args, allowed=False, result=msg)

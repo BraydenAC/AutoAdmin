@@ -30,6 +30,13 @@ start_timeout_s = 300
 stop_timeout_s = 90
 install_timeout_s = 900
 
+[supervisor]
+poll_interval_s = 5
+stable_uptime_s = 1800   # crash history resets after 30 min of clean uptime
+max_crashes = 5          # escalate to admins past this many crashes...
+window_s = 3600          # ...within this window
+autostart = true         # restart the server when the bot starts, if it should be running
+
 [budget]
 cap_usd = 10.0
 warn_fraction = 0.8        # ping admins once spend crosses this fraction of the cap

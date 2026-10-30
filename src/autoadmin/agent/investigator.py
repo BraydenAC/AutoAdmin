@@ -36,7 +36,9 @@ need to confirm a cause. Typical causes: a mod built for another Minecraft or lo
 version, a missing dependency, two incompatible mods, a bad config value, wrong Java \
 version, port already in use, out of memory.
 
-When done, call submit_report exactly once. Set understood=true only when the evidence \
+When done, call submit_report exactly once. Give cause_key as a short stable id so the \
+same cause gets the same key next time (e.g. mod-crash:<modid>, missing-dependency:<modid>, \
+oom, port-in-use). Set understood=true only when the evidence \
 directly shows the cause. Quote short log lines as evidence. Suggested actions should be \
 concrete and reversible where possible (e.g. "disable mods/foo-1.2.jar").
 """
@@ -89,14 +91,25 @@ TOOLS = [
             "properties": {
                 "understood": {"type": "boolean"},
                 "cause": {"type": "string", "description": "One or two sentences."},
+                "cause_key": {"type": "string",
+                              "description": "Short stable id for this cause, kebab-case, e.g. "
+                                             "missing-dependency:cloth-config, oom, "
+                                             "mod-crash:create, port-in-use, unknown"},
                 "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
                 "evidence": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
                 "suggested_actions": {"type": "array", "items": {"type": "string"}, "maxItems": 4},
             },
-            "required": ["understood", "cause", "confidence", "evidence", "suggested_actions"],
+            "required": ["understood", "cause", "cause_key", "confidence", "evidence",
+                         "suggested_actions"],
         },
     },
 ]
+
+
+def unknown_report(incident_id: str, why: str) -> str:
+    return json.dumps({"incident_id": incident_id, "understood": False, "cause": why,
+                       "cause_key": "unknown", "confidence": "low", "evidence": [],
+                       "suggested_actions": []})
 
 
 class Investigator:
@@ -160,6 +173,8 @@ class Investigator:
         inc = self.services.incidents.get(incident_id)
         if inc is None:
             return json.dumps({"error": f"no incident {incident_id}"})
+        if self.services.budget.exhausted():
+            return unknown_report(incident_id, "Not investigated: the AI budget is used up.")
         cfg = self.services.config.investigator
         st = self.services.server.state()
         context = {
@@ -191,7 +206,8 @@ class Investigator:
             for call in calls:
                 if call.name == "submit_report":
                     report = {k: call.input.get(k) for k in
-                              ("understood", "cause", "confidence", "evidence", "suggested_actions")}
+                              ("understood", "cause", "cause_key", "confidence", "evidence",
+                               "suggested_actions")}
                     report["incident_id"] = incident_id
                     return json.dumps(report)
                 try:
@@ -205,6 +221,4 @@ class Investigator:
                                 "text": "Step limit reached. Call submit_report now with what you have."})
             messages.append({"role": "user", "content": results})
 
-        return json.dumps({"incident_id": incident_id, "understood": False,
-                           "cause": "Investigation ended without a report.",
-                           "confidence": "low", "evidence": [], "suggested_actions": []})
+        return unknown_report(incident_id, "Investigation ended without a report.")

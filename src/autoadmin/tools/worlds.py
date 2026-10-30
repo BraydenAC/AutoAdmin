@@ -10,7 +10,7 @@ from ..server.manager import LOADERS, ServerError
 from .confirm import confirmed
 from .registry import Registry, ToolContext, ToolError
 
-WORLD_ACTIONS: dict[str, Perm] = {
+WORLD_ACTIONS: dict[str, Perm | tuple[Perm, ...]] = {
     "list": Perm.CHAT,
     "list_backups": Perm.CHAT,
     "create": Perm.WORLDS_MANAGE,
@@ -22,20 +22,21 @@ WORLD_ACTIONS: dict[str, Perm] = {
     "set_backup_retention": Perm.ADMINS_MANAGE,   # owner only
 }
 
-MOD_ACTIONS: dict[str, Perm] = {
+MOD_ACTIONS: dict[str, Perm | tuple[Perm, ...]] = {
     "search": Perm.CHAT,
     "list": Perm.CHAT,
     "install": Perm.MODS_MANAGE,
     "install_url": Perm.MODS_MANAGE,
     "install_upload": Perm.MODS_MANAGE,
     "remove": Perm.MODS_MANAGE,
-    "disable": Perm.MODS_MANAGE,
-    "enable": Perm.MODS_MANAGE,
+    # The supervisor's crash recovery may toggle mods as a reversible fix.
+    "disable": (Perm.MODS_MANAGE, Perm.CRASH_RECOVERY),
+    "enable": (Perm.MODS_MANAGE, Perm.CRASH_RECOVERY),
 }
 
 
-def _by_action(table: dict[str, Perm]):
-    def perm(args: dict[str, Any]) -> Perm:
+def _by_action(table: dict[str, Perm | tuple[Perm, ...]]):
+    def perm(args: dict[str, Any]) -> Perm | tuple[Perm, ...]:
         action = args.get("action")
         if action not in table:
             raise ToolError(f"unknown action '{action}'")

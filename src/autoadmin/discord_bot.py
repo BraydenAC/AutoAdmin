@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Any
@@ -14,6 +15,7 @@ from .auth import Principal
 from .config import Config
 from .services import Services
 from .sessions import Attachment, IncomingMessage, Outgoing, Router
+from .supervisor import Supervisor
 from .tools import build_registry
 
 log = logging.getLogger(__name__)
@@ -103,8 +105,10 @@ class AutoAdminBot(discord.Client):
         super().__init__(intents=intents, allowed_mentions=discord.AllowedMentions.none())
         self.cfg = config.discord
         self.services = Services.from_config(config)
+        self.investigator = Investigator(self.services)
         self.router = Router(self.services, Agent(
-            self.services, build_registry(Investigator(self.services))))
+            self.services, build_registry(self.investigator)))
+        self._supervisor_task: asyncio.Task | None = None
         self.channel: discord.TextChannel | None = None
         self.send: Sender | None = None
         self._greeted = False
@@ -131,6 +135,8 @@ class AutoAdminBot(discord.Client):
             self._greeted = True
             ids = await self.send(Outgoing(greeting(self.services)))
             self.router.anchor(ids[-1])
+            supervisor = Supervisor(self.services, self.router, self.send, self.investigator)
+            self._supervisor_task = asyncio.create_task(supervisor.run())
 
     async def on_message(self, message: discord.Message) -> None:
         if (self.send is None or message.author.bot or message.guild is None

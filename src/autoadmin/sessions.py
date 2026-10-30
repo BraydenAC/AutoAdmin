@@ -14,11 +14,12 @@ from dataclasses import dataclass, field
 
 from . import noai
 from .agent import Agent
-from .auth import Perm, Principal
+from .auth import SYSTEM, Perm, Principal
 from .budget import BudgetEvent
 from .services import Services
 
 IDLE_EXPIRY_S = 24 * 3600
+SYSTEM_HEADER = "[from AutoAdmin supervisor id=system role=system]"
 
 
 @dataclass
@@ -148,6 +149,35 @@ class Router:
                                      turn=next(self._turns), conv_state=conv.state)
 
             await self._announce_budget(conv, last_bot_id, send)
+
+    # -- supervisor-initiated messages ------------------------------------------------
+
+    async def post_system(self, send: Send, text: str, *, ping_ids: list[str] | None = None,
+                          context: str | None = None) -> None:
+        """A standalone message. Replies to it continue a conversation that already
+        holds `context`, so whoever answers an escalation has the crash details."""
+        conv = Conversation()
+        if context:
+            conv.messages.append({"role": "user", "content": f"{SYSTEM_HEADER}\n{context}"})
+        await self._post(conv, send, Outgoing(text, ping_ids=ping_ids or []))
+
+    async def system_turn(self, send: Send, context: str) -> None:
+        """Run the agent as the system principal (crash recovery). Its replies are
+        posted as a standalone thread that humans can reply to."""
+        if self.services.budget.exhausted():
+            return
+        conv = Conversation()
+        conv.messages.append({"role": "user", "content": f"{SYSTEM_HEADER}\n{context}"})
+        async with conv.lock:
+            last: str | None = None
+
+            async def emit(text: str) -> None:
+                nonlocal last
+                last = await self._post(conv, send, Outgoing(text, reply_to=last))
+
+            await self.agent.run(conv.messages, SYSTEM, {}, emit,
+                                 turn=next(self._turns), conv_state=conv.state)
+            await self._announce_budget(conv, last, send)
 
     async def _announce_budget(self, conv: Conversation, reply_to: str | None,
                                send: Send) -> None:

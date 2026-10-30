@@ -13,7 +13,7 @@ right Java, installs the server, configures the world, and keeps it running.
 | Server lifecycle: vanilla / Fabric / NeoForge, Java, systemd, RCON | done |
 | Discord adapter | done |
 | Mods (Modrinth) and world profiles, backups | done |
-| Crash supervisor | planned |
+| Crash supervisor | done |
 
 ## How it works
 

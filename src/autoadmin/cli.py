@@ -22,6 +22,7 @@ from .auth import Principal
 from .config import Config
 from .services import Services
 from .sessions import IncomingMessage, Outgoing, Router
+from .supervisor import Supervisor
 from .tools import build_registry
 
 BOT_NAMES = {"bot", "autoadmin"}
@@ -48,7 +49,8 @@ async def run(config: Config) -> None:
     services = Services.from_config(config)
     owner = _user(config.cli_owner)
     services.perms.set_owner(owner.id, owner.name)
-    router = Router(services, Agent(services, build_registry(Investigator(services))))
+    investigator = Investigator(services)
+    router = Router(services, Agent(services, build_registry(investigator)))
     counter = itertools.count(1)
     me = owner
 
@@ -60,6 +62,7 @@ async def run(config: Config) -> None:
         print(f"  #{n} AutoAdmin {meta}: {out.text}")
         return n
 
+    supervisor = asyncio.create_task(Supervisor(services, router, send, investigator).run())
     print(__doc__)
     print(f"You are {me.name} (owner). Model: {config.agent.model}. "
           f"Every AI reply spends real budget.\n")
