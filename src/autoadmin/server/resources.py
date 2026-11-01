@@ -75,13 +75,13 @@ def storage(runtime: Path) -> dict:
     return {"runtime_mb": sizes}
 
 
-async def process(unit, heap_mb: int | None) -> dict:
-    first = await unit.accounting()
+async def process(backend, heap_mb: int | None) -> dict:
+    first = await backend.accounting()
     if not first.get("running"):
         return {"running": False}
     t0 = time.monotonic()
     await asyncio.sleep(1)
-    second = await unit.accounting()
+    second = await backend.accounting()
     cores = os.cpu_count() or 1
     cpu_now = (second["cpu_ns"] - first["cpu_ns"]) / ((time.monotonic() - t0) * 1e9) * 100
     up = second["uptime_s"] or 1

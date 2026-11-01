@@ -10,7 +10,7 @@ right Java, installs the server, configures the world, and keeps it running.
 | Phase | |
 |---|---|
 | Core: permissions, audit log, budget, agent loop | done |
-| Server lifecycle: vanilla / Fabric / NeoForge, Java, systemd, RCON | done |
+| Server lifecycle: vanilla / Fabric / NeoForge, Java, systemd, private console | done |
 | Discord adapter | done |
 | Mods (Modrinth) and world profiles, backups | done |
 | Crash supervisor | done |

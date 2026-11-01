@@ -25,7 +25,6 @@ min_host_free_mb = 4096      # never leave the host less RAM than this
 memory_overhead_mb = 1536    # systemd MemoryMax = heap + this
 nice = 5                     # lower CPU priority than the desktop
 server_port = 25565
-rcon_port = 25575            # localhost only
 start_timeout_s = 300
 stop_timeout_s = 90
 install_timeout_s = 900

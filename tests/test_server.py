@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import struct
 from pathlib import Path
 
 import pytest
@@ -14,8 +13,7 @@ from autoadmin.server import properties
 from autoadmin.server.downloads import Cache, DownloadError
 from autoadmin.server.incidents import excerpt_failure, read_lines
 from autoadmin.server.manager import InstallState, StartOutcome
-from autoadmin.server.rcon import Rcon, RconError
-from autoadmin.server.systemd import UnitState
+from autoadmin.server.backend import ProcessState
 from autoadmin.server.versions import VersionError, neoforge_prefix, pick_neoforge
 from autoadmin.tools import ToolContext, ToolError, build_registry
 from autoadmin.tools.server import console_permission
@@ -133,41 +131,6 @@ async def _instant(_):
     return None
 
 
-# -- rcon ------------------------------------------------------------------------------
-
-async def _fake_rcon_server(password: str):
-    async def handle(reader, writer):
-        async def read():
-            (n,) = struct.unpack("<i", await reader.readexactly(4))
-            d = await reader.readexactly(n)
-            return struct.unpack("<ii", d[:8]) + (d[8:-2].decode(),)
-
-        def send(req_id, kind, body):
-            payload = struct.pack("<ii", req_id, kind) + body.encode() + b"\0\0"
-            writer.write(struct.pack("<i", len(payload)) + payload)
-
-        req_id, _, pw = await read()
-        send(req_id if pw == password else -1, 2, "")
-        if pw == password:
-            req_id, _, cmd = await read()
-            send(req_id, 0, f"ran {cmd}")
-        await writer.drain()
-        writer.close()
-
-    return await asyncio.start_server(handle, "127.0.0.1", 0)
-
-
-async def test_rcon_roundtrip_and_bad_password():
-    server = await _fake_rcon_server("pw")
-    port = server.sockets[0].getsockname()[1]
-    async with server:
-        assert await Rcon("127.0.0.1", port, "pw").command("list") == "ran list"
-        with pytest.raises(RconError):
-            await Rcon("127.0.0.1", port, "nope").command("list")
-    with pytest.raises(RconError):
-        await Rcon("127.0.0.1", port, "pw", timeout=1).command("list")
-
-
 # -- startup detection ---------------------------------------------------------------------
 
 def _installed(services, world: str = "world", loader: str = "fabric") -> None:
@@ -176,7 +139,7 @@ def _installed(services, world: str = "world", loader: str = "fabric") -> None:
     services.server.save_state(InstallState(
         minecraft_version="1.21.1", loader=loader, loader_version="0.20.1", java_major=21,
         launch=["-jar", "fabric-server-launch.jar"], installed_at=0, installed_by="x",
-        rcon_password="pw", memory_mb=6144), world)
+        memory_mb=6144), world)
 
 
 class FakeUnit:
@@ -196,7 +159,7 @@ async def test_startup_ready(services, fast):
     _installed(services)
     console = services.server.dir / "console.log"
     console.write_text("[12:00:00] [Server thread/INFO]: Done (3.210s)! For help, type \"help\"\n")
-    services.server.unit = FakeUnit([UnitState("active", None, "")])
+    services.server.backend = FakeUnit([ProcessState("active", None, "")])
     outcome, _ = await services.server._await_startup(console, started=__import__("time").time())
     assert outcome is StartOutcome.READY
 
@@ -205,7 +168,7 @@ async def test_startup_eula_from_real_log(services, fast):
     _installed(services)
     console = services.server.dir / "console.log"
     console.write_text((FIXTURES / "fabric-boot-eula.log").read_text())
-    services.server.unit = FakeUnit([UnitState("inactive", 0, "success")])
+    services.server.backend = FakeUnit([ProcessState("inactive", 0, "success")])
     outcome, msg = await services.server._await_startup(console, started=__import__("time").time())
     assert outcome is StartOutcome.EULA_REQUIRED and "aka.ms" in msg
 
@@ -214,7 +177,7 @@ async def test_startup_failure_creates_incident(services, fast):
     _installed(services)
     console = services.server.dir / "console.log"
     console.write_text("starting\njava.lang.IllegalStateException: mod foo needs bar\n\tat x.y(Z.java:1)\nbye\n")
-    services.server.unit = FakeUnit([UnitState("failed", 1, "exit-code")])
+    services.server.backend = FakeUnit([ProcessState("failed", 1, "exit-code")])
     outcome, msg = await services.server._await_startup(console, started=__import__("time").time())
     assert outcome is StartOutcome.FAILED
     inc_id = msg.split("incident_id: ")[1].split()[0]

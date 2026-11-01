@@ -103,14 +103,14 @@ class Supervisor:
         server = self.s.server
         if server.state() is None or server.busy:
             return
-        unit = await server.unit.state()
+        unit = await server.backend.state()
         if unit.running:
             if self.state.escalated:
                 # A human started it again: resume normal supervision.
                 self.state = SupervisorState()
                 self._save()
             elif self.state.chain:
-                acct = await server.unit.accounting()
+                acct = await server.backend.accounting()
                 if acct.get("uptime_s", 0) >= self.cfg.stable_uptime_s:
                     self.state.chain.clear()
                     self._save()

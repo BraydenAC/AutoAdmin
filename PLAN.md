@@ -44,7 +44,7 @@ Discord adapter ──► Router/Sessions ──► Agent loop ──► Tool re
 | `auth.py` | Principals, permission store, deterministic checks |
 | `tools/` | Typed tools; each declares its required permission |
 | `server/process.py` | systemd `--user` unit control, status |
-| `server/rcon.py` | RCON client for console commands |
+| `server/launcher.py` | Runs the JVM, owns its console; private socket for commands |
 | `server/supervisor.py` | Watches process + logs, detects crashes, triggers agent |
 | `install/` | Mojang manifest, Fabric/NeoForge installers, Java (Temurin) provisioning |
 | `mods/` | Modrinth API, URL download, attachment intake, hash verification |
@@ -127,7 +127,7 @@ admins. It is never allowed to restore, delete, or change permissions.
 4. Run the Fabric or NeoForge server installer for that version.
 5. **EULA**: post the link and ask the requester to confirm. Record who accepted and when, then
    write `eula.txt`.
-6. Write `server.properties` from the world options. Enable RCON on localhost with a random password.
+6. Write `server.properties` from the world options. RCON and query stay off (forced on every start).
 7. Install mods (see below).
 8. Write and enable the systemd user unit, then start. Watch the log for `Done (` to confirm startup.
 9. Report back.
@@ -135,8 +135,11 @@ admins. It is never allowed to restore, delete, or change permissions.
 ### Process management
 - Server runs as `systemd --user` unit `autoadmin-mc.service` (needs `loginctl enable-linger`).
 - The bot runs as its own unit, `autoadmin-bot.service`, so either can restart independently.
-- Console access is over **RCON**. Note: Minecraft binds it to all interfaces; replaced by the
-  launcher's private console channel in phase 6 (see Platforms).
+- Console access goes through the **launcher**, which owns the server's stdin; the bot sends
+  commands over a private Unix socket in `$XDG_RUNTIME_DIR` (no network port). A command's
+  output is the console lines that follow it; saves wait for `Saved the game`. `systemctl
+  stop` (KillMode=mixed) makes the launcher send `stop`, so the world is saved; Java's exit
+  status passes through, so a killed JVM still looks like a crash.
 
 ### Crash handling
 1. The supervisor detects an unexpected exit, or a startup that fails or times out.
@@ -354,8 +357,8 @@ AutoAdmin/
 4. ✅ **Mods + worlds**: Modrinth, fallback chain, profiles, switching, backups.
 5. ✅ **Supervisor**: crash detection, analysis turn, escalation, no-AI mode.
 6. **Hardening**: rate limits, destructive-action confirmations, end-to-end test on a real server.
-   **Windows support + console exposure**: launcher process and `ProcessBackend` (see
-   Platforms), replacing RCON with the launcher's private console channel.
+   ✅ **Console exposure**: launcher process + `ProcessBackend` (systemd backend), RCON removed.
+   **Windows backend**: `ProcessBackend` for Windows on the same launcher (see Platforms).
    ✅ **Installer**: `autoadmin setup` (see First-time setup).
 7. *(post-MVP)* In-game chat adapter; Tailnet management.
 

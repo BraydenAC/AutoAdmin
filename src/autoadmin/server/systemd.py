@@ -1,4 +1,4 @@
-"""The Minecraft server as a `systemd --user` service."""
+"""Linux backend: the launcher runs as a `systemd --user` service."""
 
 from __future__ import annotations
 
@@ -6,8 +6,10 @@ import asyncio
 import getpass
 import shlex
 import time
-from dataclasses import dataclass
 from pathlib import Path
+
+from . import console
+from .backend import LaunchSpec, ProcessState, launcher_argv
 
 UNIT_DIR = Path.home() / ".config" / "systemd" / "user"
 
@@ -19,49 +21,26 @@ async def run(*args: str) -> tuple[int, str]:
     return proc.returncode or 0, out.decode(errors="replace").strip()
 
 
-@dataclass
-class UnitSpec:
-    name: str
-    workdir: Path
-    java: Path
-    heap_mb: int
-    launch: list[str]          # args after the JVM memory flags, e.g. ["-jar", "server.jar"]
-    memory_max_mb: int
-    nice: int
-    console_log: Path
-
-    def render(self) -> str:
-        exec_start = shlex.join([str(self.java), f"-Xmx{self.heap_mb}M", f"-Xms{min(self.heap_mb, 1024)}M",
-                                 *self.launch, "nogui"])
-        return f"""\
+def render_unit(spec: LaunchSpec, argv: list[str], stop_timeout_s: int) -> str:
+    # KillMode=mixed: SIGTERM goes to the launcher only, which sends `stop` to the
+    # server; everything left is SIGKILLed after TimeoutStopSec.
+    return f"""\
 # Managed by AutoAdmin. Changes here are overwritten on every start.
 [Unit]
 Description=AutoAdmin Minecraft server
 
 [Service]
 Type=simple
-WorkingDirectory={self.workdir}
-ExecStart={exec_start}
+WorkingDirectory={spec.workdir}
+ExecStart={shlex.join(argv)}
 StandardInput=null
-StandardOutput=truncate:{self.console_log}
-StandardError=inherit
-Nice={self.nice}
-MemoryMax={self.memory_max_mb}M
-TimeoutStopSec=90
+KillMode=mixed
+Nice={spec.nice}
+MemoryMax={spec.memory_max_mb}M
+TimeoutStopSec={stop_timeout_s}
 SuccessExitStatus=0 143
 Restart=no
 """
-
-
-@dataclass
-class UnitState:
-    active: str       # active | activating | inactive | failed | deactivating
-    exit_status: int | None
-    result: str
-
-    @property
-    def running(self) -> bool:
-        return self.active in ("active", "activating", "deactivating")
 
 
 class Unit:
@@ -70,9 +49,8 @@ class Unit:
         self.service = f"{name}.service"
         self.path = UNIT_DIR / self.service
 
-    async def install(self, spec: UnitSpec) -> None:
+    async def install(self, text: str) -> None:
         UNIT_DIR.mkdir(parents=True, exist_ok=True)
-        text = spec.render()
         if not self.path.exists() or self.path.read_text() != text:
             self.path.write_text(text)
         code, out = await run("systemctl", "--user", "daemon-reload")
@@ -88,15 +66,14 @@ class Unit:
     async def stop(self) -> None:
         await run("systemctl", "--user", "stop", self.service)
 
-    async def state(self) -> UnitState:
+    async def state(self) -> ProcessState:
         _, out = await run("systemctl", "--user", "show", self.service,
                            "-p", "ActiveState", "-p", "ExecMainStatus", "-p", "Result")
         props = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
         status = props.get("ExecMainStatus", "")
-        return UnitState(props.get("ActiveState", "inactive"),
-                         int(status) if status.isdigit() else None,
-                         props.get("Result", ""))
-
+        return ProcessState(props.get("ActiveState", "inactive"),
+                            int(status) if status.isdigit() else None,
+                            props.get("Result", ""))
 
     async def accounting(self) -> dict:
         """Live resource counters from systemd's cgroup accounting."""
@@ -119,6 +96,36 @@ class Unit:
             "cpu_ns": num("CPUUsageNSec"),
             "uptime_s": time.monotonic() - entered if entered else 0,
         }
+
+
+class SystemdBackend:
+    def __init__(self, unit_name: str, run_dir: Path, stop_timeout_s: int):
+        self.unit = Unit(unit_name)
+        self.socket = console.socket_path(unit_name, run_dir)
+        self.exit_file = run_dir / f"{unit_name}.exit"
+        self.stop_timeout_s = stop_timeout_s
+
+    async def start(self, spec: LaunchSpec) -> None:
+        self.exit_file.parent.mkdir(parents=True, exist_ok=True)
+        argv = launcher_argv(self.socket, spec.console_log, self.exit_file, spec)
+        await self.unit.install(render_unit(spec, argv, self.stop_timeout_s))
+        await self.unit.start()
+
+    async def stop(self) -> None:
+        await self.unit.stop()       # blocks until stopped or force-killed
+
+    async def state(self) -> ProcessState:
+        return await self.unit.state()
+
+    async def accounting(self) -> dict:
+        return await self.unit.accounting()
+
+    async def command(self, command: str, *, until: str | None = None,
+                      timeout: float = console.DEFAULT_TIMEOUT) -> list[str]:
+        return await console.send(self.socket, command, until=until, timeout=timeout)
+
+    async def survives_logout(self) -> bool:
+        return await linger_enabled()
 
 
 async def linger_enabled() -> bool:

@@ -63,7 +63,7 @@ def register(r: Registry) -> None:
             return json.dumps(s.budget.status())
         if view == "resources":
             st = s.server.state()
-            proc = await resources.process(s.server.unit, st.memory_mb if st else None)
+            proc = await resources.process(s.server.backend, st.memory_mb if st else None)
             disk = await asyncio.to_thread(resources.storage, s.jail.root)
             return json.dumps({"host": resources.host(), "server_process": proc, **disk})
         raise ToolError(f"unknown view '{view}'")

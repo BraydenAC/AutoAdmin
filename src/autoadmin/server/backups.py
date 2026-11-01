@@ -16,7 +16,6 @@ from pathlib import Path
 
 from ..config import Jail
 from .manager import ServerError, ServerManager, _noop, Progress
-from .rcon import RconError
 
 # Top-level entries in a world folder that are rebuilt, not backed up.
 EXCLUDE = {
@@ -26,6 +25,9 @@ EXCLUDE = {
 }
 BACKUP_ID = re.compile(r"\d{8}-\d{6}-(auto|manual)(-\d+)?")
 DEFAULT_RETENTION = 3
+# `save-all flush` returns before the save finishes; this line marks the end.
+SAVED = r"Saved the game"
+SAVE_TIMEOUT_S = 120
 
 
 def _included(world_dir: Path) -> list[Path]:
@@ -109,13 +111,12 @@ class BackupStore:
         if st is None:
             raise ServerError(f"There is no world named '{world}'.")
         live = world == self.server.active_world() and await self.server.running()
-        rcon = self.server._rcon(st) if live else None
-        if rcon:
+        if live:
             # Flush and pause saving so the archive is consistent.
             try:
-                await rcon.command("save-off")
-                await rcon.command("save-all flush")
-            except RconError as e:
+                await self.server.command("save-off")
+                await self.server.command("save-all flush", until=SAVED, timeout=SAVE_TIMEOUT_S)
+            except ServerError as e:
                 raise ServerError(f"Couldn't pause world saving for the backup: {e}")
         try:
             out_dir = self.root / world
@@ -135,10 +136,10 @@ class BackupStore:
                 tmp.replace(archive)
             await asyncio.to_thread(write)
         finally:
-            if rcon:
+            if live:
                 try:
-                    await rcon.command("save-on")
-                except RconError:
+                    await self.server.command("save-on")
+                except ServerError:
                     pass
 
         meta = {

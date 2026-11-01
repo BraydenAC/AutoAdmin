@@ -10,12 +10,11 @@ import asyncio
 import json
 import os
 import re
-import secrets
 import shutil
 import tarfile
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from enum import StrEnum
 from pathlib import Path
 
@@ -23,8 +22,8 @@ from ..config import Config, Jail
 from . import properties, versions
 from .downloads import Cache
 from .incidents import Incident, IncidentStore, excerpt_failure, read_lines
-from .rcon import Rcon, RconError
-from .systemd import Unit, UnitSpec, UnitState, linger_enabled
+from .backend import LaunchSpec, ProcessState, make_backend
+from .console import ConsoleError
 
 Progress = Callable[[str], Awaitable[None]]
 
@@ -34,6 +33,8 @@ DONE = re.compile(r"\]: Done \(\d+[.,]\d+s\)!")
 EULA_NEEDED = re.compile(r"You need to agree to the EULA")
 EULA_URL = "https://aka.ms/MinecraftEULA"
 NEOFORGE_OK = "The server installed successfully"
+# Forced on every install and start: RCON would open a network port.
+MANAGED_PROPERTIES = {"enable-rcon": "false", "enable-query": "false"}
 
 
 class ServerError(Exception):
@@ -57,7 +58,6 @@ class InstallState:
     launch: list[str]
     installed_at: float
     installed_by: str
-    rcon_password: str
     memory_mb: int
     eula_accepted_by: str | None = None
     eula_accepted_at: float | None = None
@@ -76,7 +76,7 @@ class ServerManager:
         self.worlds_root = jail.path("worlds")
         self.cache = Cache(jail.path("cache"))
         self.incidents = incidents
-        self.unit = Unit(self.cfg.unit_name)
+        self.backend = make_backend(self.cfg.unit_name, jail.path("run"), self.cfg.stop_timeout_s)
         self._active_file = jail.path("active_world")
         self._eula_file = jail.path("eula.json")
         self._desired_file = jail.path("server_desired")
@@ -123,7 +123,9 @@ class ServerManager:
         path = self.worlds_root / name / "autoadmin.json"
         if not path.exists():
             return None
-        return InstallState(**json.loads(path.read_text()))
+        known = {f.name for f in fields(InstallState)}
+        # Older files may carry retired fields (e.g. rcon_password).
+        return InstallState(**{k: v for k, v in json.loads(path.read_text()).items() if k in known})
 
     def save_state(self, st: InstallState, world: str | None = None) -> None:
         name = world or self.active_world()
@@ -190,7 +192,7 @@ class ServerManager:
         return self.active_world() is not None
 
     async def running(self) -> bool:
-        return (await self.unit.state()).running
+        return (await self.backend.state()).running
 
     # -- java --------------------------------------------------------------------
 
@@ -271,17 +273,11 @@ class ServerManager:
                 raise
 
             properties.write(tmp / "server.properties", {
-                "enable-rcon": "true",
-                "rcon.port": str(self.cfg.rcon_port),
-                "rcon.password": (pw := secrets.token_urlsafe(18)),
-                "broadcast-rcon-to-ops": "false",
-                "server-port": str(self.cfg.server_port),
-                "enable-query": "false",
-            })
+                **MANAGED_PROPERTIES, "server-port": str(self.cfg.server_port)})
             st = InstallState(
                 minecraft_version=mc.id, loader=loader, loader_version=loader_version,
                 java_major=mc.java_major, launch=launch, installed_at=time.time(),
-                installed_by=requested_by, rcon_password=pw,
+                installed_by=requested_by,
                 memory_mb=memory_mb or self.cfg.memory_mb)
             (tmp / "autoadmin.json").write_text(json.dumps(asdict(st), indent=2))
             self._write_eula_txt(tmp)
@@ -385,10 +381,12 @@ class ServerManager:
         """True while a start/stop/install holds the lock (not a crash, whatever it looks like)."""
         return self._lock.locked()
 
-    def crash_incident(self, unit: UnitState) -> Incident:
+    def crash_incident(self, unit: ProcessState) -> Incident:
         why = {"oom-kill": "killed for exceeding its memory cap (systemd MemoryMax)",
                "signal": "killed by a signal", "core-dump": "dumped core",
-               "exit-code": f"exited with status {unit.exit_status}"}.get(
+               "exit-code": (f"was killed by signal {unit.exit_status - 128}"
+                             if (unit.exit_status or 0) > 128
+                             else f"exited with status {unit.exit_status}")}.get(
             unit.result, f"stopped unexpectedly ({unit.result or 'unknown'})")
         st = self.state()
         summary = (f"Server crashed: {why}. World '{self.active_world()}', heap "
@@ -397,22 +395,21 @@ class ServerManager:
 
     # -- lifecycle -------------------------------------------------------------------
 
-    def _rcon(self, st: InstallState) -> Rcon:
-        return Rcon("127.0.0.1", self.cfg.rcon_port, st.rcon_password)
-
     async def start(self, progress: Progress = _noop) -> tuple[StartOutcome, str]:
         async with self._lock:
             st = self._require_installed()
             if await self.running():
                 return StartOutcome.ALREADY_RUNNING, "The server is already running."
             java = self._java_bin(st.java_major) or await self.ensure_java(st.java_major, progress)
+            # The console is AutoAdmin's own channel; never a network port.
+            properties.write(self.dir / "server.properties", MANAGED_PROPERTIES)
             console = self.dir / "console.log"
-            await self.unit.install(UnitSpec(
-                name=self.unit.name, workdir=self.dir, java=java, heap_mb=st.memory_mb,
-                launch=st.launch, memory_max_mb=st.memory_mb + self.cfg.memory_overhead_mb,
-                nice=self.cfg.nice, console_log=console))
+            console.write_text("")   # so a previous run's "Done" can't be mistaken for this one
             started = time.time()
-            await self.unit.start()
+            await self.backend.start(LaunchSpec(
+                workdir=self.dir, java=java, heap_mb=st.memory_mb, launch=st.launch,
+                memory_max_mb=st.memory_mb + self.cfg.memory_overhead_mb,
+                nice=self.cfg.nice, console_log=console))
             await progress("Starting the server…")
             return await self._await_startup(console, started)
 
@@ -424,7 +421,7 @@ class ServerManager:
             if any(DONE.search(l) for l in lines):
                 self.set_desired("running")
                 return StartOutcome.READY, f"Server is up ({time.time() - started:.0f}s)."
-            state = await self.unit.state()
+            state = await self.backend.state()
             if not state.running:
                 if any(EULA_NEEDED.search(l) for l in lines):
                     return (StartOutcome.EULA_REQUIRED,
@@ -448,37 +445,36 @@ class ServerManager:
 
     async def stop(self) -> str:
         async with self._lock:
-            st = self._require_installed()
+            self._require_installed()
             self.set_desired("stopped")   # before stopping, so it never looks like a crash
             if not await self.running():
                 return "The server isn't running."
-            try:
-                await self._rcon(st).command("stop")
-            except RconError:
-                await self.unit.stop()
-            deadline = time.time() + self.cfg.stop_timeout_s
-            while await self.running():
-                if time.time() > deadline:
-                    await self.unit.stop()
-                    return "The server didn't stop cleanly in time, so I forced it."
-                await asyncio.sleep(1)
+            # The launcher turns this into a `stop` command, so the world is saved.
+            await self.backend.stop()
+            if (await self.backend.state()).result == "timeout":
+                return "The server didn't stop cleanly in time, so I forced it."
             return "Server stopped."
 
+    async def command(self, command: str, *, until: str | None = None,
+                      timeout: float = 2.0) -> str:
+        """Run a console command on the running server; returns its output."""
+        try:
+            lines = await self.backend.command(command, until=until, timeout=timeout)
+        except ConsoleError as e:
+            raise ServerError(str(e))
+        return "\n".join(lines)
+
     async def console(self, command: str) -> str:
-        st = self._require_installed()
+        self._require_installed()
         if not await self.running():
             raise ServerError("The server isn't running.")
-        try:
-            out = await self._rcon(st).command(command.removeprefix("/"))
-        except RconError as e:
-            raise ServerError(str(e))
-        return out or "(no output)"
+        return await self.command(command) or "(no output)"
 
     async def status(self) -> dict:
         st = self.state()
         if st is None:
             return {"installed": False}
-        unit = await self.unit.state()
+        unit = await self.backend.state()
         info = {
             "installed": True,
             "world": self.active_world(),
@@ -489,12 +485,12 @@ class ServerManager:
             "eula_accepted": self.eula_record() is not None,
             "mods": len(st.mods),
             "state": "running" if unit.running else "stopped",
-            "survives_logout": await linger_enabled(),
+            "survives_logout": await self.backend.survives_logout(),
         }
         if unit.running:
             try:
-                info["players"] = await self._rcon(st).command("list")
-            except RconError:
+                info["players"] = await self.command("list")
+            except ServerError:
                 info["players"] = "unknown (server still starting?)"
         return info
 

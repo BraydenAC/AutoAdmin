@@ -13,7 +13,7 @@ from autoadmin.auth import Perm
 from autoadmin.server.downloads import NotFound
 from autoadmin.server.manager import InstallState, ServerError, ServerManager
 from autoadmin.server.mods import inspect_jar
-from autoadmin.server.systemd import UnitState
+from autoadmin.server.backend import ProcessState
 from autoadmin.services import Services
 from autoadmin.tools import ToolContext, build_registry
 
@@ -24,7 +24,7 @@ from .conftest import ADMIN, OWNER, USER
 
 class StoppedUnit:
     async def state(self):
-        return UnitState("inactive", None, "")
+        return ProcessState("inactive", None, "")
 
 
 def make_world(services, name="world", loader="fabric", mc="1.21.1", activate=True):
@@ -36,7 +36,7 @@ def make_world(services, name="world", loader="fabric", mc="1.21.1", activate=Tr
     (d / "server.properties").write_text("level-name=world\nrcon.password=pw\n")
     services.server.save_state(InstallState(
         minecraft_version=mc, loader=loader, loader_version="0.1", java_major=21,
-        launch=["-jar", "x.jar"], installed_at=0, installed_by="t", rcon_password="pw",
+        launch=["-jar", "x.jar"], installed_at=0, installed_by="t",
         memory_mb=2048), name)
     if activate:
         services.jail.path("active_world").write_text(name)
@@ -45,7 +45,7 @@ def make_world(services, name="world", loader="fabric", mc="1.21.1", activate=Tr
 
 @pytest.fixture(autouse=True)
 def stopped(services):
-    services.server.unit = StoppedUnit()
+    services.server.backend = StoppedUnit()
 
 
 def world_args(**kw):
@@ -71,7 +71,7 @@ def test_phase2_install_migrates_to_world(config):
     (runtime / "server").mkdir(parents=True)
     (runtime / "server" / "autoadmin.json").write_text(json.dumps(dict(
         minecraft_version="1.20", loader="vanilla", loader_version=None, java_major=17,
-        launch=["-jar", "server.jar"], installed_at=0, installed_by="o", rcon_password="pw",
+        launch=["-jar", "server.jar"], installed_at=0, installed_by="o",
         memory_mb=6144, eula_accepted_by="owner(cli-owner)", eula_accepted_at=1.0, extra={})))
     s = Services.from_config(config)
     assert s.server.active_world() == "world"

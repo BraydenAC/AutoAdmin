@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -46,7 +49,6 @@ class ServerConfig:
     memory_overhead_mb: int = 1536     # systemd MemoryMax = heap + this
     nice: int = 5                      # lower CPU priority than the desktop
     server_port: int = 25565
-    rcon_port: int = 25575
     start_timeout_s: int = 300
     stop_timeout_s: int = 90
     install_timeout_s: int = 900
@@ -91,16 +93,26 @@ class Config:
             runtime = path.parent / runtime
         return cls(
             runtime=runtime.resolve(),
-            agent=AgentConfig(**raw.get("agent", {})),
-            budget=BudgetConfig(**raw.get("budget", {})),
+            agent=_section(AgentConfig, raw, "agent"),
+            budget=_section(BudgetConfig, raw, "budget"),
             pricing={m: Price(**p) for m, p in raw.get("pricing", {}).items()},
-            discord=DiscordConfig(**raw.get("discord", {})),
-            investigator=InvestigatorConfig(**raw.get("investigator", {})),
-            server=ServerConfig(**raw.get("server", {})),
-            supervisor=SupervisorConfig(**raw.get("supervisor", {})),
+            discord=_section(DiscordConfig, raw, "discord"),
+            investigator=_section(InvestigatorConfig, raw, "investigator"),
+            server=_section(ServerConfig, raw, "server"),
+            supervisor=_section(SupervisorConfig, raw, "supervisor"),
             cli_owner=raw.get("cli", {}).get("owner", "owner"),
             source=path,
         )
+
+
+def _section(cls, raw: dict, name: str):
+    """Build a config section, ignoring (with a warning) keys it doesn't have, such
+    as retired settings left in an older config.toml."""
+    values = raw.get(name, {})
+    known = {f.name for f in fields(cls)}
+    for key in values.keys() - known:
+        log.warning("config.toml: ignoring unknown setting [%s] %s", name, key)
+    return cls(**{k: v for k, v in values.items() if k in known})
 
 
 class JailError(ValueError):

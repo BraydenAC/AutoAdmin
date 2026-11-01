@@ -7,15 +7,15 @@ import pytest
 
 from autoadmin.auth import SYSTEM
 from autoadmin.server.manager import InstallState, StartOutcome
-from autoadmin.server.systemd import UnitState
+from autoadmin.server.backend import ProcessState
 from autoadmin.supervisor import Supervisor
 from autoadmin.tools import ToolContext, build_registry
 
 from .conftest import ADMIN, OWNER
 
-RUNNING = UnitState("active", None, "")
-CRASHED = UnitState("failed", 1, "exit-code")
-CLEAN_EXIT = UnitState("inactive", 0, "success")
+RUNNING = ProcessState("active", None, "")
+CRASHED = ProcessState("failed", 1, "exit-code")
+CLEAN_EXIT = ProcessState("inactive", 0, "success")
 
 
 class FakeUnit:
@@ -68,10 +68,10 @@ def world(services):
     services.jail.path("active_world").write_text("world")
     services.server.save_state(InstallState(
         minecraft_version="1.21.1", loader="fabric", loader_version="0.1", java_major=21,
-        launch=["-jar", "x.jar"], installed_at=0, installed_by="t", rcon_password="pw",
+        launch=["-jar", "x.jar"], installed_at=0, installed_by="t",
         memory_mb=2048), "world")
     services.server.set_desired("running")
-    services.server.unit = FakeUnit(CRASHED)
+    services.server.backend = FakeUnit(CRASHED)
     return d
 
 
@@ -87,7 +87,7 @@ def make(services, *reports, starts=None, **cfg):
     async def fake_start(progress=None):
         started.append(1)
         outcome, msg = outcomes.pop(0) if outcomes else (StartOutcome.READY, "Server is up (5s).")
-        services.server.unit._state = RUNNING if outcome is StartOutcome.READY else CRASHED
+        services.server.backend._state = RUNNING if outcome is StartOutcome.READY else CRASHED
         if outcome is StartOutcome.READY:
             services.server.set_desired("running")
         return outcome, msg
@@ -96,7 +96,7 @@ def make(services, *reports, starts=None, **cfg):
 
 
 def crash(services):
-    services.server.unit._state = CRASHED
+    services.server.backend._state = CRASHED
 
 
 # -- policy ----------------------------------------------------------------------------------
@@ -167,7 +167,7 @@ async def test_failed_restart_is_next_crash(services, world):
 
 async def test_clean_exit_means_stopped_in_game(services, world):
     sup, router, inv, started = make(services)
-    services.server.unit._state = CLEAN_EXIT
+    services.server.backend._state = CLEAN_EXIT
     await sup.tick()
     assert services.server.desired == "stopped" and started == [] and inv.calls == 0
     assert "stopped from inside the game" in router.posts[0]["text"]
@@ -193,7 +193,7 @@ async def test_stable_uptime_and_human_start_reset(services, world):
     sup, router, _, _ = make(services, understood("oom"), stable_uptime_s=100)
     await sup.tick()
     assert len(sup.state.chain) == 1
-    services.server.unit.uptime = 150
+    services.server.backend.uptime = 150
     await sup.tick()
     assert sup.state.chain == []
     sup.state.escalated = True
@@ -211,11 +211,11 @@ async def test_state_survives_restart_of_bot(services, world):
 # -- autostart ---------------------------------------------------------------------------------
 
 async def test_autostart_only_when_it_should_be_running(services, world):
-    services.server.unit._state = UnitState("inactive", None, "")
+    services.server.backend._state = ProcessState("inactive", None, "")
     sup, router, _, started = make(services)
     await sup.autostart()
     assert started == [1] and "back up" in router.posts[0]["text"]
-    services.server.unit._state = UnitState("inactive", None, "")
+    services.server.backend._state = ProcessState("inactive", None, "")
     services.server.set_desired("stopped")
     await sup.autostart()
     assert started == [1]
@@ -224,7 +224,7 @@ async def test_autostart_only_when_it_should_be_running(services, world):
 # -- crash incident ------------------------------------------------------------------------------
 
 def test_oom_kill_is_named_in_incident(services, world):
-    inc = services.server.crash_incident(UnitState("failed", None, "oom-kill"))
+    inc = services.server.crash_incident(ProcessState("failed", None, "oom-kill"))
     assert "memory cap" in inc.summary and "boom" in inc.excerpt
 
 
