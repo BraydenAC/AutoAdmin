@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import os
 import shutil
+import sys
 import time
 from pathlib import Path
 
@@ -32,24 +34,38 @@ def _dir_size(path: Path) -> int:
     return total
 
 
-def _meminfo() -> dict[str, int]:
-    out = {}
+class _MEMORYSTATUSEX(ctypes.Structure):
+    _fields_ = [("dwLength", ctypes.c_uint32), ("dwMemoryLoad", ctypes.c_uint32),
+                *[(n, ctypes.c_uint64) for n in (
+                    "ullTotalPhys", "ullAvailPhys", "ullTotalPageFile", "ullAvailPageFile",
+                    "ullTotalVirtual", "ullAvailVirtual", "ullAvailExtendedVirtual")]]
+
+
+def memory_mb() -> tuple[int, int]:
+    """(total, available) physical memory of the host."""
+    if sys.platform == "win32":
+        st = _MEMORYSTATUSEX(dwLength=ctypes.sizeof(_MEMORYSTATUSEX))
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+            raise ctypes.WinError()
+        return st.ullTotalPhys // MB, st.ullAvailPhys // MB
+    mem = {}
     with open("/proc/meminfo") as f:
         for line in f:
             k, v = line.split(":", 1)
-            out[k] = int(v.split()[0]) // 1024
-    return out
+            mem[k] = int(v.split()[0]) // 1024
+    return mem.get("MemTotal", 0), mem.get("MemAvailable", 0)
 
 
 def host() -> dict:
-    mem = _meminfo()
-    load = os.getloadavg()
+    total, available = memory_mb()
     disk = shutil.disk_usage(Path.home())
+    info = {"cpu_cores": os.cpu_count()}
+    if hasattr(os, "getloadavg"):      # not on Windows
+        info["load_avg_1m_5m_15m"] = [round(x, 2) for x in os.getloadavg()]
     return {
-        "cpu_cores": os.cpu_count(),
-        "load_avg_1m_5m_15m": [round(x, 2) for x in load],
-        "memory_total_mb": mem.get("MemTotal"),
-        "memory_available_mb": mem.get("MemAvailable"),
+        **info,
+        "memory_total_mb": total,
+        "memory_available_mb": available,
         "disk_free_gb": round(disk.free / 1024 ** 3, 1),
     }
 

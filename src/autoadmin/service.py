@@ -3,8 +3,6 @@ Scheduler task on Windows."""
 
 from __future__ import annotations
 
-import getpass
-import os
 import shlex
 import subprocess
 import sys
@@ -12,6 +10,7 @@ import tempfile
 from pathlib import Path
 from xml.sax.saxutils import escape
 
+from .fileperm import windows_user
 from .server.systemd import UNIT_DIR
 
 BOT_UNIT = "autoadmin-bot.service"
@@ -70,11 +69,6 @@ def start_bot_unit() -> tuple[bool, str]:
 
 
 # -- Windows -------------------------------------------------------------------------------
-
-def windows_user() -> str:
-    domain = os.environ.get("USERDOMAIN")
-    return f"{domain}\\{getpass.getuser()}" if domain else getpass.getuser()
-
 
 def bot_command_windows(config_path: Path, log_file: Path) -> tuple[Path, list[str]]:
     """pythonw has no console window; logs go to a file instead."""
@@ -150,3 +144,11 @@ def install_bot_task(config_path: Path, log_file: Path, *, always_on: bool) -> t
     if r.returncode:
         return True, f"registered, but couldn't start it now: {(r.stdout + r.stderr).strip()}"
     return True, ""
+
+
+def bot_task_always_on() -> bool:
+    """Whether the bot's task runs at boot (S4U), so it and the server outlive a logout."""
+    r = subprocess.run(["schtasks", "/Query", "/TN", BOT_TASK, "/XML"], capture_output=True,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    # schtasks may print the XML as UTF-16 or in the console code page.
+    return r.returncode == 0 and (b"S4U" in r.stdout or "S4U".encode("utf-16-le") in r.stdout)

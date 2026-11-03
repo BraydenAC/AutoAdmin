@@ -11,8 +11,10 @@ import json
 import os
 import re
 import shutil
+import sys
 import tarfile
 import time
+import zipfile
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field, fields
 from enum import StrEnum
@@ -20,6 +22,7 @@ from pathlib import Path
 
 from ..config import Config, Jail
 from . import properties, versions
+from . import resources
 from .downloads import Cache
 from .incidents import Incident, IncidentStore, excerpt_failure, read_lines
 from .backend import LaunchSpec, ProcessState, make_backend
@@ -67,6 +70,16 @@ class InstallState:
 
 async def _noop(_: str) -> None:
     pass
+
+
+def _exit_reason(status: int | None) -> str:
+    if status is None:
+        return "exited"
+    if sys.platform != "win32" and 128 < status < 192:     # the launcher's 128+N
+        return f"was killed by signal {status - 128}"
+    if status > 0xFFFF:                                    # a Windows NTSTATUS
+        return f"exited with status {status:#010x}"
+    return f"exited with status {status}"
 
 
 class ServerManager:
@@ -197,7 +210,8 @@ class ServerManager:
     # -- java --------------------------------------------------------------------
 
     def _java_bin(self, major: int) -> Path | None:
-        found = sorted(self.jail.path("java", str(major)).glob("*/bin/java"))
+        exe = "java.exe" if sys.platform == "win32" else "java"
+        found = sorted(self.jail.path("java", str(major)).glob(f"*/bin/{exe}"))
         return found[0] if found else None
 
     async def ensure_java(self, major: int, progress: Progress = _noop) -> Path:
@@ -212,8 +226,12 @@ class ServerManager:
         tmp.mkdir(parents=True)
 
         def extract() -> None:
-            with tarfile.open(archive) as tf:
-                tf.extractall(tmp, filter="data")
+            if zipfile.is_zipfile(archive):       # Windows builds; extractall drops unsafe paths
+                with zipfile.ZipFile(archive) as zf:
+                    zf.extractall(tmp)
+            else:
+                with tarfile.open(archive) as tf:
+                    tf.extractall(tmp, filter="data")
         await asyncio.to_thread(extract)
         shutil.rmtree(dest, ignore_errors=True)
         os.replace(tmp, dest)
@@ -344,11 +362,7 @@ class ServerManager:
         return clean
 
     def host_memory_mb(self) -> int:
-        with open("/proc/meminfo") as f:
-            for line in f:
-                if line.startswith("MemTotal:"):
-                    return int(line.split()[1]) // 1024
-        return 0
+        return resources.memory_mb()[0]
 
     def set_memory(self, mb: int) -> str:
         st = self._require_installed()
@@ -382,11 +396,9 @@ class ServerManager:
         return self._lock.locked()
 
     def crash_incident(self, unit: ProcessState) -> Incident:
-        why = {"oom-kill": "killed for exceeding its memory cap (systemd MemoryMax)",
+        why = {"oom-kill": "killed for exceeding its memory cap",
                "signal": "killed by a signal", "core-dump": "dumped core",
-               "exit-code": (f"was killed by signal {unit.exit_status - 128}"
-                             if (unit.exit_status or 0) > 128
-                             else f"exited with status {unit.exit_status}")}.get(
+               "exit-code": _exit_reason(unit.exit_status)}.get(
             unit.result, f"stopped unexpectedly ({unit.result or 'unknown'})")
         st = self.state()
         summary = (f"Server crashed: {why}. World '{self.active_world()}', heap "
@@ -441,6 +453,10 @@ class ServerManager:
         crash = sorted(crash_dir.glob("*.txt"), key=lambda p: p.stat().st_mtime)[-1:] \
             if crash_dir.exists() else []
         files = [self.dir / "console.log", self.dir / "logs" / "latest.log", *crash]
+        if (launcher_log := getattr(self.backend, "log_file", None)) and launcher_log.exists():
+            files.append(launcher_log)
+            if not lines:      # the launcher failed before Java printed anything
+                lines = read_lines(launcher_log)
         return self.incidents.create(kind, summary, excerpt_failure(lines), files)
 
     async def stop(self) -> str:

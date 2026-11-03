@@ -35,9 +35,8 @@ right Java, installs the server, configures the world, and keeps it running.
 
 ## Requirements
 
-- Linux with systemd (developed on Arch), Python 3.14, [uv](https://docs.astral.sh/uv/).
-  Windows support is in progress: setup and the bot service work, the Minecraft
-  server backend doesn't yet.
+- Linux with systemd (developed on Arch) or Windows 10/11, Python 3.14,
+  [uv](https://docs.astral.sh/uv/). x64, or aarch64 where Temurin has Java builds.
 - An Anthropic API key
 - A Discord bot application ([developer portal](https://discord.com/developers/applications))
 

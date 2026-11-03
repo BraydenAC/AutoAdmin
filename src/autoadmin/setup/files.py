@@ -6,23 +6,12 @@ import io
 import os
 import re
 import shutil
-import subprocess
-import sys
 import tomllib
 from pathlib import Path
 
 from dotenv import dotenv_values
 
-
-def restrict_to_owner(path: Path) -> None:
-    """Only the current user may read the file."""
-    if sys.platform == "win32":
-        # No chmod on Windows: drop inherited ACL entries and grant only this user.
-        subprocess.run(["icacls", str(path), "/inheritance:r",
-                        "/grant:r", f"{os.environ['USERNAME']}:F"],
-                       check=True, capture_output=True)
-    else:
-        path.chmod(0o600)
+from ..fileperm import restrict_to_owner
 
 
 class EnvFile:

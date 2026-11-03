@@ -40,11 +40,8 @@ class Wizard:
         if h.os == "linux" and not h.systemd:
             io.say("AutoAdmin needs systemd on Linux to run the bot and the Minecraft server.")
             return 1
-        if h.arch != "x64":
-            io.say(f"Note: Java downloads currently support x64 only, not {h.arch}.")
-        if h.os == "windows":
-            io.say("Note: running the Minecraft server on Windows isn't supported yet. This sets up "
-                   "the bot, keys, and firewall, and is ready for when it is.")
+        if h.arch not in ("x64", "aarch64"):
+            io.say(f"Note: Java downloads support x64 and aarch64 only, not {h.arch}.")
 
         if ensure_config(self.config_path):
             io.say(f"Created {self.config_path.name} from the example.")

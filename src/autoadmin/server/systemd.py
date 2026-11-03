@@ -99,9 +99,11 @@ class Unit:
 
 
 class SystemdBackend:
+    log_file = None      # the launcher's errors go to the journal
+
     def __init__(self, unit_name: str, run_dir: Path, stop_timeout_s: int):
         self.unit = Unit(unit_name)
-        self.socket = console.socket_path(unit_name, run_dir)
+        self.socket = console.endpoint_path(unit_name, run_dir)
         self.exit_file = run_dir / f"{unit_name}.exit"
         self.stop_timeout_s = stop_timeout_s
 

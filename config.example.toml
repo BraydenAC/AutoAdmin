@@ -22,7 +22,7 @@ max_steps = 8
 unit_name = "autoadmin-mc"   # systemd --user unit
 memory_mb = 6144             # default heap (-Xmx); admins can change it via chat
 min_host_free_mb = 4096      # never leave the host less RAM than this
-memory_overhead_mb = 1536    # systemd MemoryMax = heap + this
+memory_overhead_mb = 1536    # memory cap (systemd MemoryMax, Windows job) = heap + this
 nice = 5                     # lower CPU priority than the desktop
 server_port = 25565
 start_timeout_s = 300

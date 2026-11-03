@@ -6,7 +6,9 @@ fields the agent needs.
 
 from __future__ import annotations
 
+import platform
 import re
+import sys
 import time
 from dataclasses import dataclass
 
@@ -14,7 +16,7 @@ from .downloads import get_json, get_text
 
 MOJANG_MANIFEST = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
 ADOPTIUM_ASSET = ("https://api.adoptium.net/v3/assets/latest/{major}/hotspot"
-                  "?architecture=x64&image_type=jre&os=linux&vendor=eclipse")
+                  "?architecture={arch}&image_type=jre&os={os}&vendor=eclipse")
 FABRIC_META = "https://meta.fabricmc.net/v2"
 NEOFORGE_MAVEN = "https://maven.neoforged.net/releases/net/neoforged/neoforge"
 
@@ -73,10 +75,19 @@ class JavaRuntime:
     sha256: str
 
 
+def java_platform() -> tuple[str, str]:
+    """This host in Adoptium's terms, e.g. ('windows', 'x64')."""
+    os_name = {"win32": "windows", "darwin": "mac"}.get(sys.platform, sys.platform)
+    machine = platform.machine().lower()
+    arch = {"x86_64": "x64", "amd64": "x64", "arm64": "aarch64"}.get(machine, machine)
+    return os_name, arch
+
+
 async def resolve_java(major: int) -> JavaRuntime:
-    assets = await get_json(ADOPTIUM_ASSET.format(major=major))
+    os_name, arch = java_platform()
+    assets = await get_json(ADOPTIUM_ASSET.format(major=major, os=os_name, arch=arch))
     if not assets:
-        raise VersionError(f"No Temurin JRE {major} build for linux x64.")
+        raise VersionError(f"No Temurin JRE {major} build for {os_name} {arch}.")
     a = assets[0]
     pkg = a["binary"]["package"]
     return JavaRuntime(major, a["release_name"], pkg["link"], pkg["checksum"])

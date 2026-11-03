@@ -34,6 +34,12 @@ def _included(world_dir: Path) -> list[Path]:
     return sorted(p for p in world_dir.iterdir() if p.name not in EXCLUDE)
 
 
+def _skip_lock(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
+    # The running server holds session.lock locked, and on Windows it can't be
+    # read. The server recreates it, so backups never need it.
+    return None if Path(info.name).name == "session.lock" else info
+
+
 class Settings:
     """Small runtime settings file for values changed from chat."""
 
@@ -132,7 +138,7 @@ class BackupStore:
                 tmp = archive.with_name(archive.name + ".part")
                 with tarfile.open(tmp, "w:zst") as tf:
                     for p in _included(world_dir):
-                        tf.add(p, arcname=p.name)
+                        tf.add(p, arcname=p.name, filter=_skip_lock)
                 tmp.replace(archive)
             await asyncio.to_thread(write)
         finally:

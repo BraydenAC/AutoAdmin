@@ -287,20 +287,25 @@ configured for during first-time setup.
 **Launcher.** A small Python process, shipped with AutoAdmin, sits between the service
 manager and Java:
 - It starts Java and owns its stdin. The bot sends console commands to it over a private
-  local channel (Unix socket on Linux, named pipe on Windows), which replaces RCON and
-  closes the `0.0.0.0:25575` exposure. A command's output is the console lines that
-  follow it within a short window.
+  local channel, which replaces RCON and closes the `0.0.0.0:25575` exposure: a Unix
+  socket on Linux; on Windows a `127.0.0.1` port named in an owner-only file, with a random
+  token every request must carry. A command's output is the console lines that follow it
+  within a short window. Control requests: `ping`, `stop`, `stats`.
 - It writes the server's exit code to a file, so the supervisor can classify an exit even
   after a bot restart.
 
 **`ProcessBackend`** interface (start, stop, state, stats, send command):
 - **Linux:** systemd `--user` unit runs the launcher; `MemoryMax` and `Nice` as before.
-- **Windows:** the bot spawns the launcher detached so it outlives the bot; memory cap via a
-  Job Object, below-normal priority class.
+- **Windows:** the bot spawns the launcher with no window, below-normal priority, and out of
+  the bot task's job where Windows allows it, so it outlives a bot restart. Java runs in a
+  Job Object: memory cap, CPU/peak-memory accounting, and Java dies if the launcher does.
+  The launcher holds a lock file while it runs (liveness without trusting pids); stop =
+  `stop` request, then kill after the timeout. "Survives logout" = the bot task is always-on.
 
 **Other platform-specific pieces:** Temurin download by OS/arch (`.zip` + `java.exe` on
-Windows), host RAM/CPU via `psutil` instead of `/proc`. Backups (stdlib zstd), Discord, the
-agent, and mod/NeoForge installs are already portable.
+Windows), host RAM via `GlobalMemoryStatusEx` instead of `/proc` (ctypes, no new
+dependency). Backups skip `session.lock`, which Windows can't read while the server runs.
+Discord, the agent, and mod/NeoForge installs were already portable.
 
 **Bot startup on Windows** (setup asks which; a Task Scheduler task either way, with
 restart-on-failure and no run-time limit):
@@ -358,7 +363,8 @@ AutoAdmin/
 5. ✅ **Supervisor**: crash detection, analysis turn, escalation, no-AI mode.
 6. **Hardening**: rate limits, destructive-action confirmations, end-to-end test on a real server.
    ✅ **Console exposure**: launcher process + `ProcessBackend` (systemd backend), RCON removed.
-   **Windows backend**: `ProcessBackend` for Windows on the same launcher (see Platforms).
+   ✅ **Windows backend**: `ProcessBackend` for Windows on the same launcher (see Platforms).
+   Unit-tested on Linux; needs a real Windows run with a Minecraft server.
    ✅ **Installer**: `autoadmin setup` (see First-time setup).
 7. *(post-MVP)* In-game chat adapter; Tailnet management.
 

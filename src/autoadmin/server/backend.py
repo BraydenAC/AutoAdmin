@@ -42,6 +42,8 @@ class LaunchSpec:
 
 
 class ProcessBackend(Protocol):
+    log_file: Path | None      # the launcher's own output, when it isn't in a system journal
+
     async def start(self, spec: LaunchSpec) -> None:
         """Launch and return once the process is running (not once the server is ready)."""
 
@@ -60,22 +62,28 @@ class ProcessBackend(Protocol):
     async def survives_logout(self) -> bool: ...
 
 
-def launcher_argv(socket: Path, console_log: Path, exit_file: Path, spec: LaunchSpec) -> list[str]:
-    # The bot's own interpreter, so the launcher comes from the same install.
-    return [sys.executable, "-m", "autoadmin.server.launcher", "--socket", str(socket),
-            "--console-log", str(console_log), "--exit-file", str(exit_file),
-            "--", *spec.java_argv()]
+def launcher_argv(endpoint: Path, console_log: Path, exit_file: Path, spec: LaunchSpec, *,
+                  python: Path | None = None, extra: list[str] = ()) -> list[str]:
+    # The bot's own interpreter by default, so the launcher comes from the same install.
+    return [str(python or sys.executable), "-m", "autoadmin.server.launcher",
+            "--endpoint", str(endpoint), "--console-log", str(console_log),
+            "--exit-file", str(exit_file), *extra, "--", *spec.java_argv()]
 
 
 def make_backend(unit_name: str, run_dir: Path, stop_timeout_s: int) -> ProcessBackend:
     if sys.platform == "linux":
         from .systemd import SystemdBackend
         return SystemdBackend(unit_name, run_dir, stop_timeout_s)
+    if sys.platform == "win32":
+        from .windows import WindowsBackend
+        return WindowsBackend(unit_name, run_dir, stop_timeout_s)
     return UnsupportedBackend()
 
 
 class UnsupportedBackend:
-    """Placeholder until the Windows backend exists: reports stopped, refuses to start."""
+    """Other platforms: reports stopped, refuses to start."""
+
+    log_file = None
 
     async def start(self, spec: LaunchSpec) -> None:
         raise RuntimeError(f"running the server on {sys.platform} isn't supported yet")

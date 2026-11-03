@@ -46,7 +46,7 @@ class ServerConfig:
     unit_name: str = "autoadmin-mc"
     memory_mb: int = 6144              # default -Xmx; adjustable via chat
     min_host_free_mb: int = 4096       # refuse heaps that leave the host less than this
-    memory_overhead_mb: int = 1536     # systemd MemoryMax = heap + this
+    memory_overhead_mb: int = 1536     # memory cap (systemd MemoryMax, Windows job) = heap + this
     nice: int = 5                      # lower CPU priority than the desktop
     server_port: int = 25565
     start_timeout_s: int = 300
