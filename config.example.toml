@@ -41,6 +41,14 @@ cap_usd = 10.0
 warn_fraction = 0.8        # ping admins once spend crosses this fraction of the cap
 user_block_fraction = 0.05 # non-admins are blocked past this fraction of the cap
 
+[limits]
+# Per user; the owner and admins aren't limited (exempt_admins).
+messages_per_minute = 6
+messages_per_hour = 60
+requests_in_progress = 2     # a user's messages running or queued at once
+heavy_actions_per_hour = 6   # world create/import/restore/backup, mod installs, start/stop
+exempt_admins = true
+
 # USD per million tokens. Unknown models are priced at the most expensive row.
 [pricing."claude-opus-5-5"]
 input = 4.0

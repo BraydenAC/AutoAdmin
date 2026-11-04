@@ -8,7 +8,7 @@ import pytest
 from autoadmin.auth import SYSTEM
 from autoadmin.server.manager import InstallState, StartOutcome
 from autoadmin.server.backend import ProcessState
-from autoadmin.supervisor import Supervisor
+from autoadmin.supervisor import CRASH_NOTICE, Supervisor
 from autoadmin.tools import ToolContext, build_registry
 
 from .conftest import ADMIN, OWNER
@@ -106,6 +106,7 @@ async def test_understood_crash_gets_fix_turn_then_restart(services, world):
     await sup.tick()
     assert inv.calls == 1 and len(router.turns) == 1 and started == [1]
     assert "reversible fix" in router.turns[0] and "boom" in router.turns[0]
+    assert router.posts[0]["text"] == CRASH_NOTICE              # before the investigation
     assert router.posts[-1]["text"].startswith("Restarted.")
     assert not sup.state.escalated and len(sup.state.chain) == 1
 
@@ -113,7 +114,7 @@ async def test_understood_crash_gets_fix_turn_then_restart(services, world):
 async def test_unknown_then_crash_again_escalates(services, world):
     sup, router, _, started = make(services, UNKNOWN, understood("oom"))
     await sup.tick()
-    assert router.turns == [] and "couldn't tell why" in router.posts[0]["text"]
+    assert router.turns == [] and "couldn't tell why" in router.posts[1]["text"]
     assert started == [1]
     crash(services)
     await sup.tick()
@@ -125,7 +126,9 @@ async def test_unknown_then_crash_again_escalates(services, world):
     assert "Investigator report" in esc["context"]          # replies get the crash details
     crash(services)
     await sup.tick()                                        # stays quiet while escalated
-    assert started == [1] and len(router.posts) == 3
+    # No notice for the second crash: it can't be restarted after an unexplained one.
+    assert [p["text"] for p in router.posts].count(CRASH_NOTICE) == 1
+    assert started == [1] and len(router.posts) == 4       # notice, as-is, restarted, escalation
 
 
 async def test_understood_then_different_cause_keeps_restarting(services, world):
@@ -153,6 +156,8 @@ async def test_too_many_crashes_escalates(services, world):
         await sup.tick()
     assert started == [1, 1] and sup.state.escalated
     assert "crashed 3 times" in router.posts[-1]["text"]
+    # Announced for the two it restarted, not the third, which was over the limit.
+    assert [p["text"] for p in router.posts].count(CRASH_NOTICE) == 2
 
 
 async def test_failed_restart_is_next_crash(services, world):
@@ -163,6 +168,8 @@ async def test_failed_restart_is_next_crash(services, world):
     await sup.tick()
     assert started == [1] and inv.calls == 2 and sup.state.escalated
     assert [e.incident_id for e in sup.state.chain][-1] == inc.id
+    # One notice per crash detected, not per failed restart in the same chain.
+    assert [p["text"] for p in router.posts].count(CRASH_NOTICE) == 1
 
 
 async def test_clean_exit_means_stopped_in_game(services, world):
@@ -180,6 +187,7 @@ async def test_no_ai_mode_restarts_once_then_escalates(services, world):
     crash(services)
     await sup.tick()
     assert inv.calls == 0 and router.turns == [] and started == [1] and sup.state.escalated
+    assert CRASH_NOTICE not in [p["text"] for p in router.posts]   # nothing gets analyzed
 
 
 async def test_desired_stopped_is_not_a_crash(services, world):

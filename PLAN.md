@@ -37,19 +37,35 @@ Discord adapter ──► Router/Sessions ──► Agent loop ──► Tool re
 
 | Module | Responsibility |
 |---|---|
-| `adapters/discord.py` | Gateway connection, mention/reply detection, attachment intake, message posting |
+| `__main__.py` | Entry point: `setup`, `uninstall`, `cli`, `discord`, `install-service` |
+| `discord_bot.py` | Gateway connection, mention/reply detection, attachment intake, message posting |
+| `cli.py` | Terminal stand-in for Discord, for testing without a bot |
 | `sessions.py` | Conversation tracking via reply chains; requester binding per turn |
-| `agent/loop.py` | Claude tool-use loop, system prompt, context assembly |
-| `agent/budget.py` | Token/cost accounting, 80% warning, cap → no-AI mode |
-| `auth.py` | Principals, permission store, deterministic checks |
-| `tools/` | Typed tools; each declares its required permission |
-| `server/process.py` | systemd `--user` unit control, status |
-| `server/launcher.py` | Runs the JVM, owns its console; private socket for commands |
-| `server/supervisor.py` | Watches process + logs, detects crashes, triggers agent |
-| `install/` | Mojang manifest, Fabric/NeoForge installers, Java (Temurin) provisioning |
-| `mods/` | Modrinth API, URL download, attachment intake, hash verification |
-| `worlds.py` | World profiles, switching, backups |
+| `limits.py` | Per-user message rate, requests in progress, heavy actions per hour |
+| `agent/loop.py`, `agent/prompt.py` | Claude tool-use loop, system prompt, context assembly |
+| `agent/investigator.py` | Read-only Haiku sub-agent for crash/failure investigation |
+| `budget.py` | Token/cost accounting, 80% warning, cap → no-AI mode |
+| `noai.py` | `status`/`start`/`stop` without AI once the budget is spent |
+| `auth.py` | Principals, roles, permission store, deterministic checks |
 | `audit.py` | Append-only log of every tool call: principal, args, result |
+| `tools/` | Typed tools (`server`, `worlds`, `access`); registry gate (permission, rate limit, audit); two-step confirmations |
+| `supervisor.py` | Watches the server process, detects crashes, investigates, restarts or escalates |
+| `services.py` | The shared bundle of subsystems handed to tools and the router |
+| `config.py` | `config.toml` loading and the runtime directory jail |
+| `server/manager.py` | Install (vanilla/Fabric/NeoForge), Java provisioning, start/stop, status, world profiles |
+| `server/backend.py` | `ProcessBackend` interface and per-platform selection |
+| `server/systemd.py`, `server/windows.py` | Linux (systemd `--user` unit) and Windows (detached launcher) backends |
+| `server/launcher.py` | Runs the JVM, owns its console; private socket/port for commands |
+| `server/console.py` | Client for the launcher's console channel |
+| `server/winjob.py`, `server/lockfile.py` | Windows Job Object (memory cap, accounting); launcher liveness lock |
+| `server/versions.py`, `server/downloads.py` | Mojang/Fabric/NeoForge/Temurin version lookup; checksum-keyed download cache |
+| `server/mods.py` | Modrinth installs, URL/upload fallbacks, enable/disable |
+| `server/backups.py` | Backups (tar.zst), retention, restore |
+| `server/transfer.py` | World zips for uninstall; import from Downloads by exact file name |
+| `server/properties.py`, `server/resources.py`, `server/incidents.py` | `server.properties` editing; host/process/disk usage; failure excerpts and incident records |
+| `setup/` | `autoadmin setup` wizard and `autoadmin uninstall`; key/Discord checks, host detection, firewall, `.env` handling |
+| `service.py` | The bot's own background service (systemd unit or Task Scheduler task) |
+| `fileperm.py` | Owner-only files on Linux and Windows |
 
 ## Conversations (Discord)
 
@@ -280,6 +296,19 @@ Only what's needed for a decision enters the main agent's context.
   Server-side refusal fallback (`fallbacks: "default"`) is on; fallback attempts are charged at
   their own model's price.
 
+## Rate limits
+
+Per user, in memory (a bot restart resets them); the owner, admins and the system principal
+are exempt by default (`[limits] exempt_admins`).
+- **Messages**: 6/minute and 60/hour. A refused message isn't tracked or sent to the model;
+  the user gets one notice per lockout, then silence (so the limit can't make the bot spam).
+- **Requests in progress**: at most 2 of a user's messages running or queued at once
+  (stops one person opening many conversations in parallel).
+- **Heavy actions**: 6/hour of world create/import/restore/backup, mod installs, and server
+  start/stop/restart, checked in the tool registry after the permission gate. Only calls that
+  ran count (not confirmation prompts or failures); a refusal returns `RATE LIMITED` with the
+  wait, and is audited.
+
 ## Platforms
 
 Linux (systemd) and Windows (x64; arm64 where Temurin has builds). The OS is detected and
@@ -387,10 +416,12 @@ AutoAdmin/
 4. ✅ **Mods + worlds**: Modrinth, fallback chain, profiles, switching, backups.
 5. ✅ **Supervisor**: crash detection, analysis turn, escalation, no-AI mode.
 6. **Hardening**: rate limits, destructive-action confirmations, end-to-end test on a real server.
+   ✅ **Rate limits**: per-user messages, requests in progress, heavy actions (see `limits.py`).
    ✅ **Console exposure**: launcher process + `ProcessBackend` (systemd backend), RCON removed.
    ✅ **Windows backend**: `ProcessBackend` for Windows on the same launcher (see Platforms).
    Verified end to end on Windows (start, console, stop, bot restart, crash, live backup, stats).
    ✅ **Installer**: `autoadmin setup` (see First-time setup).
+   ✅ **End-to-end test** on a real server, Linux and Windows.
 7. *(post-MVP)* In-game chat adapter; Tailnet management.
 
 ## Open items

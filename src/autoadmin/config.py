@@ -42,6 +42,15 @@ class BudgetConfig:
 
 
 @dataclass(frozen=True)
+class LimitsConfig:
+    messages_per_minute: int = 6
+    messages_per_hour: int = 60
+    requests_in_progress: int = 2      # a user's messages running or queued at once
+    heavy_actions_per_hour: int = 6    # installs, world rebuilds, backups, start/stop
+    exempt_admins: bool = True         # the owner and admins aren't limited
+
+
+@dataclass(frozen=True)
 class ServerConfig:
     unit_name: str = "autoadmin-mc"
     memory_mb: int = 6144              # default -Xmx; adjustable via chat
@@ -80,6 +89,7 @@ class Config:
     investigator: InvestigatorConfig = InvestigatorConfig()
     server: ServerConfig = ServerConfig()
     supervisor: SupervisorConfig = SupervisorConfig()
+    limits: LimitsConfig = LimitsConfig()
     cli_owner: str = "owner"
     source: Path | None = field(default=None, compare=False)
 
@@ -100,6 +110,7 @@ class Config:
             investigator=_section(InvestigatorConfig, raw, "investigator"),
             server=_section(ServerConfig, raw, "server"),
             supervisor=_section(SupervisorConfig, raw, "supervisor"),
+            limits=_section(LimitsConfig, raw, "limits"),
             cli_owner=raw.get("cli", {}).get("owner", "owner"),
             source=path,
         )

@@ -30,6 +30,8 @@ from .sessions import Router, Send
 
 log = logging.getLogger(__name__)
 
+CRASH_NOTICE = "Server crash detected!  I'll analyze the problem, then the server will restart."
+
 
 @dataclass
 class CrashEntry:
@@ -122,12 +124,27 @@ class Supervisor:
             await self._say("The Minecraft server was stopped from inside the game; "
                             "I won't restart it.")
             return
-        await self.handle_crash(server.crash_incident(unit))
+        inc = server.crash_incident(unit)
+        # Right away: investigating takes a while, and players will be asking. Only
+        # when it's true: an analysis will run and a restart is still possible.
+        if self._will_investigate() and not self._restart_ruled_out():
+            await self._say(CRASH_NOTICE)
+        await self.handle_crash(inc)
 
     # -- crash handling --------------------------------------------------------------------
 
+    def _will_investigate(self) -> bool:
+        return self.investigator is not None and not self.s.budget.exhausted()
+
+    def _restart_ruled_out(self) -> bool:
+        """Escalation is already certain for the next crash, whatever the analysis finds
+        (the checks in _escalation_reason that don't depend on the report)."""
+        now = time.time()
+        recent = [e for e in self.state.chain if now - e.ts <= self.cfg.window_s]
+        return bool(recent and not recent[-1].understood) or len(recent) + 1 > self.cfg.max_crashes
+
     async def _investigate(self, inc: Incident) -> dict:
-        if self.investigator is None or self.s.budget.exhausted():
+        if not self._will_investigate():
             return json.loads(unknown_report(inc.id, "Not investigated (no AI available)."))
         try:
             return json.loads(await self.investigator.run(

@@ -121,8 +121,21 @@ class Router:
         perms.remember(msg.author)
         if not perms.check(msg.author, Perm.CHAT).allowed:
             return  # blocked users are told once, at block time
+        limits = self.services.limits
+        ok, notice = limits.admit(msg.author)
+        if not ok:
+            # Not tracked, so the refused message doesn't join the conversation.
+            if notice:
+                await send(Outgoing(notice, reply_to=msg.id))
+            return
         self._track(conv, msg.id)
+        limits.started(msg.author)
+        try:
+            await self._run_turn(conv, msg, send)
+        finally:
+            limits.finished(msg.author)
 
+    async def _run_turn(self, conv: Conversation, msg: IncomingMessage, send: Send) -> None:
         async with conv.lock:
             conv.last_active = time.time()
             uploads = conv.state.setdefault("attachments", {})

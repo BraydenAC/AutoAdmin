@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..auth import Perm, Principal
+from ..limits import heavy_action
 from ..services import Services
 
 log = logging.getLogger(__name__)
@@ -141,6 +142,16 @@ class Registry:
                 audit.record(principal=who, tool=name, args=args, allowed=False, result=msg)
                 return msg, True
 
+        limits = ctx.services.limits
+        heavy = heavy_action(name, args)
+        if heavy and (wait := limits.heavy_wait(ctx.principal)):
+            msg = (f"RATE LIMITED: {ctx.principal.name} has used the "
+                   f"{ctx.services.config.limits.heavy_actions_per_hour} installs, rebuilds, "
+                   f"backups, and starts/stops allowed per hour. Tell them they can try "
+                   f"{heavy} again in {max(1, round(wait / 60))} minutes, or ask an admin.")
+            audit.record(principal=who, tool=name, args=args, allowed=False, result=msg)
+            return msg, True
+
         try:
             result = await tool.handler(ctx, **args)
         except ToolDenied as e:
@@ -157,6 +168,8 @@ class Registry:
             return f"Internal error in {name}: {type(e).__name__}: {e}", True
 
         audit.record(principal=who, tool=name, args=args, allowed=True, result=result)
+        if heavy and not result.startswith("CONFIRMATION NEEDED"):
+            limits.record_heavy(ctx.principal)
         if len(result) > MAX_RESULT_CHARS:
             result = result[:MAX_RESULT_CHARS] + "\n... (output truncated)"
         return result, False

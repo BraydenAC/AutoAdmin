@@ -8,6 +8,7 @@ from .audit import AuditLog
 from .auth import PermissionStore
 from .budget import Budget
 from .config import Config, Jail
+from .limits import RateLimiter
 from .server.backups import BackupStore, Settings
 from .server.incidents import IncidentStore
 from .server.manager import ServerManager
@@ -25,6 +26,7 @@ class Services:
     server: ServerManager
     backups: BackupStore
     mods: ModManager
+    limits: RateLimiter
 
     @classmethod
     def from_config(cls, config: Config) -> Services:
@@ -43,4 +45,5 @@ class Services:
             server=server,
             backups=backups,
             mods=ModManager(server, backups),
+            limits=RateLimiter(config.limits, perms),
         )
