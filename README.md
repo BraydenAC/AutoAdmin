@@ -34,7 +34,9 @@ right Java, installs the server, configures the world, and keeps it running.
 ## Setup
 
 ```sh
+cd /path/to/where/you/want/it
 git clone https://github.com/BraydenAC/AutoAdmin.git
+cd autoadmin
 uv sync
 uv run autoadmin setup
 ```
