@@ -57,6 +57,11 @@ def enable_linger() -> tuple[bool, str]:
     return r.returncode == 0, (r.stdout + r.stderr).strip()
 
 
+def disable_linger() -> tuple[bool, str]:
+    r = run("loginctl", "disable-linger")
+    return r.returncode == 0, (r.stdout + r.stderr).strip()
+
+
 def linux_firewall() -> str | None:
     """The active firewall manager, if any. Checked without root."""
     for kind, unit in (("ufw", "ufw"), ("firewalld", "firewalld")):
@@ -73,6 +78,13 @@ def linux_firewall_commands(kind: str, port: int) -> list[list[str]]:
             ["sudo", "firewall-cmd", "--reload"]]
 
 
+def linux_firewall_remove_commands(kind: str, port: int) -> list[list[str]]:
+    if kind == "ufw":
+        return [["sudo", "ufw", "delete", "allow", f"{port}/tcp"]]
+    return [["sudo", "firewall-cmd", "--permanent", f"--remove-port={port}/tcp"],
+            ["sudo", "firewall-cmd", "--reload"]]
+
+
 def run_interactive(commands: list[list[str]]) -> bool:
     """Run with the terminal attached, so sudo can ask for a password."""
     return all(subprocess.run(cmd).returncode == 0 for cmd in commands)
@@ -83,6 +95,10 @@ def run_interactive(commands: list[list[str]]) -> bool:
 def windows_firewall_command(port: int) -> list[str]:
     return ["netsh", "advfirewall", "firewall", "add", "rule", f"name={FIREWALL_RULE}",
             "dir=in", "action=allow", "protocol=TCP", f"localport={port}"]
+
+
+def windows_firewall_remove_command() -> list[str]:
+    return ["netsh", "advfirewall", "firewall", "delete", "rule", f"name={FIREWALL_RULE}"]
 
 
 def windows_firewall_rule_exists() -> bool:

@@ -53,11 +53,15 @@ class DiscordApi:
         self.opener = opener
 
     def get(self, path: str) -> Any:
-        req = urllib.request.Request(DISCORD_API + path, headers={
+        return self.request("GET", path)
+
+    def request(self, method: str, path: str) -> Any:
+        req = urllib.request.Request(DISCORD_API + path, method=method, headers={
             "Authorization": f"Bot {self.token}", "User-Agent": USER_AGENT})
         try:
             with self.opener(req, timeout=20) as resp:
-                return json.load(resp)
+                body = resp.read()
+                return json.loads(body) if body else None
         except urllib.error.HTTPError as e:
             if e.code == 401:
                 raise Unauthorized("Discord rejected the bot token") from e
@@ -82,6 +86,9 @@ class DiscordApi:
 
     def member(self, guild_id: str, user_id: str) -> dict:
         return self.get(f"/guilds/{guild_id}/members/{user_id}")
+
+    def leave_guild(self, guild_id: str) -> None:
+        self.request("DELETE", f"/users/@me/guilds/{guild_id}")
 
 
 def invite_url(application_id: str) -> str:

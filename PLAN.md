@@ -97,6 +97,7 @@ to the model as a tool result so it can explain briefly to the user.
 | `mods.manage` | Install, remove, update mods (incl. uploading jars) |
 | `config.edit` | `server.properties` and mod configs |
 | `worlds.manage` | Create and switch world profiles |
+| `worlds.import` | Import a world zip from the host's Downloads by exact file name (admin+ by default) |
 | `backups.create` | Make backups |
 | `backups.restore` | Restore a backup (destructive, needs confirmation) |
 | `worlds.delete` | Delete a world (destructive, needs confirmation) |
@@ -328,16 +329,40 @@ Interactive and re-runnable. Every existing value can be kept, and kept values a
 2. **Anthropic key** (hidden input): validated with free model lookups, which also confirm
    the configured agent and investigator models are available. If the API is unreachable,
    offer to save without checking.
-3. **Discord token** (hidden input; portal instructions shown first time): validated via
-   `/users/@me`. Then the Message Content intent is read from the application flags;
-   if it's off, wait while the user turns it on.
-4. **Invite**: the link is pre-filled with the bot's client id and permissions 101376. Wait
-   until the bot is in a server.
+3. **Discord token** (hidden input): the first time, setup opens the developer portal and
+   gives two steps (New Application; Bot → Reset Token). Discord has no API to create a
+   bot, so this part stays manual. Validated via `/users/@me`. If the bot is already in
+   servers other than the configured one, setup names them and the app's owner and asks
+   whether it's the user's own bot (catches a borrowed token or a shared `.env`). Then the
+   Message Content intent is read from the application flags; if it's off, setup opens that
+   bot's settings page and waits while the user turns it on.
+4. **Invite**: opened in the browser, pre-filled with the bot's client id and permissions
+   101376. Wait until the bot is in a server. Links are always printed too, and the browser
+   isn't used over SSH or without a display.
 5. **Server and channel**: pick from lists, with no IDs to copy. The bot's effective channel
    permissions (roles + overwrites) are computed, and missing ones are named.
 6. **Store**: secrets go in `.env`, created owner-only (`chmod 600`, or an ACL for the user
    alone on Windows) and saved after each validated secret. IDs go in `config.toml`.
-7. **Background service**, **linger** (Linux), **firewall** (opt-in), as above.
+7. **Background service**, **linger** (Linux), **firewall** (opt-in), as above. Declining the
+   service when one is already installed offers to remove it. What setup changed outside
+   AutoAdmin's files (firewall rule, linger) is recorded in `runtime/setup.json`.
+
+**`autoadmin uninstall`** undoes it all, in this order: remove the bot's service/task (so the
+supervisor can't restart anything), stop the server cleanly and remove its unit, offer a
+zip of each world in Downloads (abort with nothing deleted if one fails), leave the Discord
+server and print the link for deleting the app, close the firewall rule and disable linger
+(default yes only if `setup.json` says setup did it), delete `runtime/`, `.env` and
+`config.toml`, then print the code folder's path.
+
+**Importing a saved world** (`worlds(import, file, name?)`, needs `worlds.import`: owner and
+admins by default, grantable): `file` must be the zip's exact full file name in the host's
+Downloads folder (case-sensitive, no paths, no folders, no symlinks). Nothing in Downloads
+is searched or listed, so only someone who already knows the name can import. Reads the old
+`autoadmin.json`, does a fresh install of the same Minecraft version and pinned loader for
+this machine, then copies the save, settings and mods on top. Kept from the fresh install:
+the launch line (OS-specific) and `eula.txt` (a human here must accept). Memory is reduced
+if it doesn't fit this host; the disk space needed is checked first; a failed copy removes the
+half-imported world.
 
 ## Directory layout
 
@@ -364,7 +389,7 @@ AutoAdmin/
 6. **Hardening**: rate limits, destructive-action confirmations, end-to-end test on a real server.
    ✅ **Console exposure**: launcher process + `ProcessBackend` (systemd backend), RCON removed.
    ✅ **Windows backend**: `ProcessBackend` for Windows on the same launcher (see Platforms).
-   Unit-tested on Linux; needs a real Windows run with a Minecraft server.
+   Verified end to end on Windows (start, console, stop, bot restart, crash, live backup, stats).
    ✅ **Installer**: `autoadmin setup` (see First-time setup).
 7. *(post-MVP)* In-game chat adapter; Tailnet management.
 

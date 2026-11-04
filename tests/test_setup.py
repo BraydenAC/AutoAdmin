@@ -3,6 +3,7 @@ from __future__ import annotations
 import stat
 import sys
 import tomllib
+import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -172,6 +173,10 @@ class FakeIO:
     def say(self, text=""):
         self.out.append(text)
 
+    def open_url(self, url):
+        self.out.append(f"open: {url}")
+        return False
+
     def heading(self, text):
         self.out.append(f"== {text}")
 
@@ -193,8 +198,8 @@ class FakeDiscord:
     guild_lists = [[], [{"id": G, "name": "Mine"}]]
 
     def __init__(self, token):
-        if token != "good-token":
-            raise AssertionError("only the valid token is used")
+        if token not in ("good-token", "borrowed-token"):
+            raise AssertionError("only valid tokens are used")
         self.token = token
 
     def me(self):
@@ -206,6 +211,8 @@ class FakeDiscord:
         return {"id": "app1", "flags": flags}
 
     def guilds(self):
+        if self.token == "borrowed-token":
+            return [{"id": "999", "name": "Their Server"}]
         return FakeDiscord.guild_lists.pop(0) if len(FakeDiscord.guild_lists) > 1 \
             else FakeDiscord.guild_lists[0]
 
@@ -225,7 +232,7 @@ class FakeDiscord:
 def project(tmp_path, monkeypatch):
     (tmp_path / "config.example.toml").write_text((REPO / "config.example.toml").read_text())
     FakeDiscord.intent_flags = [0, 1 << 19]
-    FakeDiscord.guild_lists = [[], [{"id": G, "name": "Mine"}]]
+    FakeDiscord.guild_lists = [[], [], [{"id": G, "name": "Mine"}]]
 
     def fake_api(token):
         if token == "bad-token":
@@ -284,6 +291,7 @@ def test_wizard_rerun_keeps_existing_values(project):
     FakeDiscord.intent_flags = [1 << 19]
     FakeDiscord.guild_lists = [[{"id": G, "name": "Mine"}]]
     io = FakeIO(("choose", 0), ("choose", 0),                  # keep both secrets
+                ("confirm", True),                             # "Is this your own bot?"
                 ("choose", 0), ("choose", 1),                  # guild, channel
                 ("confirm", False),                            # no service
                 ("confirm", True))                             # open firewall
@@ -292,9 +300,155 @@ def test_wizard_rerun_keeps_existing_values(project):
     assert not any(o.startswith("secret") for o in io.out)
 
 
+def test_wizard_catches_a_borrowed_bot(project):
+    root, _ = project
+    (root / ".env").write_text("ANTHROPIC_API_KEY=good-key\nAUTOADMIN_DISCORD_TOKEN=borrowed-token\n")
+    FakeDiscord.intent_flags = [1 << 19]
+    FakeDiscord.guild_lists = [[{"id": G, "name": "Mine"}]]
+    io = FakeIO(("choose", 0), ("choose", 0),                  # keep both (one is borrowed)
+                ("confirm", False),                            # not my bot
+                ("secret", "good-token"),                      # their own bot's token
+                ("confirm", True),                             # that one is theirs
+                ("choose", 0), ("choose", 1),
+                ("confirm", False), ("confirm", False))
+    assert wizard.Wizard(root / "config.toml", io, LINUX).run() == 0
+    text = "\n".join(io.out)
+    assert "already in: Their Server" in text and "needs its own bot" in text
+    assert "open: https://discord.com/developers/applications" in text
+    assert "AUTOADMIN_DISCORD_TOKEN=good-token" in (root / ".env").read_text()
+
+
+def test_wizard_guides_when_replacing_a_secret(project):
+    root, _ = project
+    (root / ".env").write_text("ANTHROPIC_API_KEY=good-key\nAUTOADMIN_DISCORD_TOKEN=good-token\n")
+    FakeDiscord.intent_flags = [1 << 19]
+    FakeDiscord.guild_lists = [[{"id": G, "name": "Mine"}]]
+    io = FakeIO(("choose", 1), ("secret", "good-key"),          # replace the key
+                ("choose", 1), ("secret", "good-token"),        # replace the token
+                ("confirm", True), ("choose", 0), ("choose", 1),
+                ("confirm", False), ("confirm", False))
+    assert wizard.Wizard(root / "config.toml", io, LINUX).run() == 0
+    text = "\n".join(io.out)
+    assert f"open: {wizard.ANTHROPIC_KEYS}" in text
+    assert f"open: {wizard.PORTAL}" in text and '"Reset Token"' in text
+
+
 def test_wizard_refuses_unsupported_hosts(project):
     root, _ = project
     io = FakeIO()
     assert wizard.Wizard(root / "config.toml", io, host.Host("macos", "aarch64", False, "Darwin")).run() == 1
     assert wizard.Wizard(root / "config.toml", io, host.Host("linux", "x64", False, "Alpine")).run() == 1
     assert not (root / "config.toml").exists()
+
+
+def test_setup_removes_an_old_service_when_declined(project, monkeypatch):
+    root, calls = project
+    (root / ".env").write_text("ANTHROPIC_API_KEY=good-key\nAUTOADMIN_DISCORD_TOKEN=good-token\n")
+    FakeDiscord.intent_flags = [1 << 19]
+    FakeDiscord.guild_lists = [[{"id": G, "name": "Mine"}]]
+    monkeypatch.setattr(wizard.service, "bot_unit_installed", lambda: True)
+    monkeypatch.setattr(wizard.service, "remove_unit", lambda name: calls.append(("rm", name)))
+    io = FakeIO(("choose", 0), ("choose", 0), ("confirm", True), ("choose", 0), ("choose", 1),
+                ("confirm", False),                            # no background service...
+                ("confirm", True),                             # ...so remove the old one
+                ("confirm", False))
+    assert wizard.Wizard(root / "config.toml", io, LINUX).run() == 0
+    assert calls == [("rm", "autoadmin-bot.service")]
+
+
+# -- uninstall -----------------------------------------------------------------------------
+
+class FakeBackend:
+    def __init__(self, running=True):
+        self.running, self.stopped = running, False
+
+    async def state(self):
+        from autoadmin.server.backend import ProcessState
+        return ProcessState("active" if self.running else "inactive", None, "")
+
+    async def stop(self):
+        self.running, self.stopped = False, True
+
+
+@pytest.fixture
+def installed(tmp_path, monkeypatch):
+    from autoadmin.setup import files, uninstall
+    (tmp_path / "config.example.toml").write_text((REPO / "config.example.toml").read_text())
+    files.ensure_config(tmp_path / "config.toml")
+    files.set_discord_ids(tmp_path / "config.toml", 100, 202)
+    (tmp_path / ".env").write_text("ANTHROPIC_API_KEY=k\nAUTOADMIN_DISCORD_TOKEN=good-token\n")
+    world = tmp_path / "runtime" / "worlds" / "survival"
+    (world / "world").mkdir(parents=True)
+    (world / "autoadmin.json").write_text("{}")
+    (world / "server.properties").write_text("level-name=world\n")
+    (world / "server.jar").write_text("jar")
+    (world / "world" / "level.dat").write_text("data")
+    (world / "world" / "session.lock").write_text("lock")
+    files.SetupRecord(tmp_path / "runtime" / "setup.json").update(firewall="ufw", port=25565,
+                                                                  linger=True)
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+
+    calls, backend = [], FakeBackend()
+    left = []
+    monkeypatch.setattr(uninstall, "downloads_dir", lambda: downloads)
+    monkeypatch.setattr(uninstall, "make_backend", lambda *a: backend)
+    monkeypatch.setattr(uninstall.service, "remove_unit", lambda n: calls.append(("rm", n)) or True)
+    monkeypatch.setattr(uninstall.hostmod, "linger_enabled", lambda: True)
+    monkeypatch.setattr(uninstall.hostmod, "disable_linger", lambda: calls.append("unlinger") or (True, ""))
+    monkeypatch.setattr(uninstall.hostmod, "linux_firewall", lambda: "ufw")
+    monkeypatch.setattr(uninstall.hostmod, "run_interactive", lambda c: calls.append(c) or True)
+
+    class Api:
+        def __init__(self, token):
+            assert token == "good-token"
+
+        def application(self):
+            return {"id": "app1"}
+
+        def leave_guild(self, gid):
+            left.append(gid)
+
+    monkeypatch.setattr(uninstall, "DiscordApi", Api)
+    return tmp_path, calls, backend, left, downloads
+
+
+def test_uninstall_removes_everything_and_keeps_worlds(installed):
+    from autoadmin.setup.uninstall import Uninstaller
+    root, calls, backend, left, downloads = installed
+    io = FakeIO(("confirm", True),                             # uninstall
+                ("confirm", True),                             # save worlds
+                ("confirm", True),                             # leave Discord
+                ("confirm", True),                             # close the port
+                ("confirm", True))                             # linger off
+    assert Uninstaller(root / "config.toml", io, LINUX).run() == 0
+    assert not io.answers
+    assert backend.stopped and left == ["100"]
+    assert calls == [("rm", "autoadmin-bot.service"), ("rm", "autoadmin-mc.service"),
+                     [["sudo", "ufw", "delete", "allow", "25565/tcp"]], "unlinger"]
+    (rescued,) = downloads.glob("AutoAdmin-survival-*.zip")
+    names = set(zipfile.ZipFile(rescued).namelist())
+    assert {"survival/world/level.dat", "survival/server.properties"} <= names
+    assert "survival/world/session.lock" not in names and "survival/server.jar" not in names
+    for gone in ("runtime", ".env", "config.toml"):
+        assert not (root / gone).exists()
+    assert "Delete App" in "\n".join(io.out)
+
+
+def test_uninstall_declined_changes_nothing(installed):
+    from autoadmin.setup.uninstall import Uninstaller
+    root, calls, backend, left, _ = installed
+    assert Uninstaller(root / "config.toml", FakeIO(("confirm", False)), LINUX).run() == 1
+    assert not calls and not backend.stopped and not left
+    assert (root / "runtime" / "worlds" / "survival").exists() and (root / ".env").exists()
+
+
+def test_uninstall_keeps_data_if_a_world_cant_be_saved(installed, monkeypatch):
+    from autoadmin.setup import uninstall
+    root, _, _, left, _ = installed
+    monkeypatch.setattr(uninstall, "downloads_dir", lambda: root / "missing")
+    io = FakeIO(("confirm", True), ("confirm", True))
+    assert uninstall.Uninstaller(root / "config.toml", io, LINUX).run() == 1
+    assert "Nothing was deleted" in "\n".join(io.out)
+    assert (root / "runtime" / "worlds" / "survival").exists() and (root / ".env").exists()
+    assert not left

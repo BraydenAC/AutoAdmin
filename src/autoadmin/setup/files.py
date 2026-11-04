@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import re
 import shutil
@@ -78,3 +79,21 @@ def set_discord_ids(path: Path, guild_id: int, channel_id: int) -> None:
     if discord.get("guild_id") != guild_id or discord.get("channel_id") != channel_id:
         raise RuntimeError(f"couldn't update [discord] in {path}; set the IDs by hand")
     path.write_text(text)
+
+
+class SetupRecord:
+    """What setup changed outside AutoAdmin's own files (firewall, linger), so
+    uninstall undoes exactly that and nothing the user set up themselves."""
+
+    def __init__(self, path: Path):
+        self.path = path
+
+    def load(self) -> dict:
+        try:
+            return json.loads(self.path.read_text())
+        except (FileNotFoundError, ValueError):
+            return {}
+
+    def update(self, **changes) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps({**self.load(), **changes}, indent=2))

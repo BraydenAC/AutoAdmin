@@ -1,4 +1,4 @@
-"""Entry point: `autoadmin {setup,cli,discord,install-service} [--config PATH]`."""
+"""Entry point: `autoadmin {setup,uninstall,cli,discord,install-service} [--config PATH]`."""
 
 from __future__ import annotations
 
@@ -16,8 +16,10 @@ from .config import Config
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="autoadmin")
-    parser.add_argument("mode", choices=["setup", "cli", "discord", "install-service"],
+    parser.add_argument("mode", choices=["setup", "uninstall", "cli", "discord", "install-service"],
                         help="setup: guided first-time setup (keys, Discord, background service); "
+                             "uninstall: remove AutoAdmin's services, data and keys, "
+                             "optionally saving worlds first; "
                              "cli: terminal test harness; discord: run the bot; "
                              "install-service: write the bot's systemd user unit")
     parser.add_argument("--config", type=Path, default=Path("config.toml"))
@@ -40,6 +42,13 @@ def main() -> None:
             sys.exit(Wizard(args.config).run())
         except (KeyboardInterrupt, EOFError):
             print("\nSetup cancelled. Anything already saved is kept.")
+            sys.exit(130)
+    if args.mode == "uninstall":
+        from .setup.uninstall import Uninstaller
+        try:
+            sys.exit(Uninstaller(args.config).run())
+        except (KeyboardInterrupt, EOFError):
+            print("\nUninstall cancelled. Steps already done stay done; nothing else changed.")
             sys.exit(130)
 
     if not args.config.exists():

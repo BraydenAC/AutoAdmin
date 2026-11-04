@@ -15,6 +15,27 @@ USER = Principal("u-user", "Pat")
 OTHER = Principal("u-other", "Sam")
 
 
+@pytest.fixture(autouse=True)
+def no_real_services(tmp_path, monkeypatch):
+    """Code under test must never touch the real systemd units, scheduled tasks,
+    firewall, or linger of the machine running the tests."""
+    from autoadmin import service
+    from autoadmin.server import systemd
+    from autoadmin.setup import host
+    units = tmp_path / "systemd-user"
+    monkeypatch.setattr(service, "UNIT_DIR", units)
+    monkeypatch.setattr(systemd, "UNIT_DIR", units)
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("a test reached a real system command; stub it")
+    for name in ("start_bot_unit", "remove_unit", "bot_task_exists", "remove_bot_task",
+                 "install_bot_task", "bot_task_always_on"):
+        monkeypatch.setattr(service, name, refuse)
+    for name in ("linger_enabled", "enable_linger", "disable_linger", "linux_firewall",
+                 "run_interactive", "windows_firewall_rule_exists"):
+        monkeypatch.setattr(host, name, refuse)
+
+
 @pytest.fixture
 def config(tmp_path: Path) -> Config:
     return Config(

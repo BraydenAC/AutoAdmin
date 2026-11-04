@@ -279,8 +279,10 @@ class ServerManager:
                     loader_version = build.version
                     await progress(f"Installing NeoForge {build.version} (takes about a minute)…")
                     await self._run_neoforge_installer(java, build, tmp)
+                    # The classpath separator differs, so NeoForge writes one per OS.
+                    args = "win_args.txt" if sys.platform == "win32" else "unix_args.txt"
                     launch = ["@user_jvm_args.txt",
-                              f"@libraries/net/neoforged/neoforge/{build.version}/unix_args.txt"]
+                              f"@libraries/net/neoforged/neoforge/{build.version}/{args}"]
                 if loader == "vanilla":
                     loader_version = None
             except versions.VersionError as e:

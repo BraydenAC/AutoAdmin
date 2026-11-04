@@ -50,7 +50,7 @@ def stopped(services):
 
 def world_args(**kw):
     base = {"action": "list", "name": "", "minecraft_version": "", "loader": "",
-            "backup_id": "", "count": 0}
+            "backup_id": "", "count": 0, "file": ""}
     return {**base, **kw}
 
 
@@ -334,3 +334,137 @@ async def test_dependency_already_uploaded_is_not_duplicated(services, modrinth,
     assert uploaded["required_by"] == ["modmenu"]
     assert sorted(p.name for p in (services.server.dir / "mods").glob("*.jar")) == \
         ["fabric_api_upload.jar", "mm2.jar"]
+
+
+# -- moving worlds through Downloads --------------------------------------------------------
+
+@pytest.fixture
+def downloads(tmp_path, monkeypatch):
+    from autoadmin.server import transfer
+    d = tmp_path / "Downloads"
+    d.mkdir()
+    monkeypatch.setattr(transfer, "downloads_dir", lambda: d)
+    return d
+
+
+@pytest.fixture
+def fresh_install(monkeypatch):
+    """What a real install leaves: this machine's launch line, server jars, no EULA."""
+    calls = []
+
+    async def fake_install(self, mc, loader, by, progress=None, *, world, loader_version=None,
+                           memory_mb=None):
+        calls.append((mc, loader, world, loader_version, memory_mb))
+        d = self.worlds_root / world
+        (d / "libraries").mkdir(parents=True)
+        (d / "server.jar").write_text("fresh jar")
+        (d / "eula.txt").write_text("eula=false\n")
+        (d / "server.properties").write_text("server-port=25565\n")
+        self.save_state(InstallState(
+            minecraft_version=mc, loader=loader, loader_version=loader_version, java_major=21,
+            launch=["-jar", "fresh.jar"], installed_at=1, installed_by=by,
+            memory_mb=memory_mb or 4096), world)
+        if self.active_world() is None:
+            self._active_file.write_text(world)
+        return "installed"
+    monkeypatch.setattr(ServerManager, "install", fake_install)
+    return calls
+
+
+def exported(services, downloads, name="survival", stamp="20261104-120000"):
+    from autoadmin.server.transfer import export_world
+    d = make_world(services, name)
+    (d / "mods").mkdir()
+    (d / "mods" / "lithium.jar").write_bytes(b"mod")
+    (d / "eula.txt").write_text("eula=true\n")                # accepted on the OLD machine
+    (d / "world" / "session.lock").write_text("lock")
+    st = services.server.state(name)
+    st.mods = [{"slug": "lithium", "file": "lithium.jar"}]
+    services.server.save_state(st, name)
+    zip_path = export_world(d, downloads / f"AutoAdmin-{name}-{stamp}.zip")
+    shutil.rmtree(d)
+    services.jail.path("active_world").unlink()
+    return zip_path
+
+
+ZIP = "AutoAdmin-survival-20261104-120000.zip"
+
+
+async def test_import_rebuilds_a_world_from_downloads(services, downloads, fresh_install):
+    exported(services, downloads)
+    out, err = await call(services, ADMIN, "worlds", world_args(action="import", file=ZIP))
+    assert not err, out
+    assert fresh_install == [("1.21.1", "fabric", "survival", "0.1", 2048)]
+    d = services.server.worlds_root / "survival"
+    assert (d / "world" / "region" / "r.0.0.mca").read_bytes() == b"chunks"
+    assert (d / "mods" / "lithium.jar").read_bytes() == b"mod"
+    assert not (d / "world" / "session.lock").exists()
+    assert (d / "eula.txt").read_text() == "eula=false\n"     # never imported
+    assert (d / "server.jar").read_text() == "fresh jar"
+    st = services.server.state("survival")
+    assert st.launch == ["-jar", "fresh.jar"]                 # this machine's, not the old one's
+    assert st.mods == [{"slug": "lithium", "file": "lithium.jar"}]
+    props = (d / "server.properties").read_text()
+    assert "level-name=world" in props and "enable-rcon=false" in props
+    assert f"Imported '{ZIP}'" in out and "1 mods" in out
+
+
+async def test_import_under_a_new_name(services, downloads, fresh_install):
+    exported(services, downloads)
+    out, err = await call(services, ADMIN, "worlds",
+                          world_args(action="import", file=ZIP, name="copy"))
+    assert not err, out
+    assert (services.server.worlds_root / "copy" / "world" / "region" / "r.0.0.mca").exists()
+
+
+def test_find_import_needs_the_exact_file_name(tmp_path):
+    from autoadmin.server.transfer import find_import
+    zip_path = tmp_path / ZIP
+    zip_path.write_bytes(b"")
+    (tmp_path / "AutoAdmin-survival-20261104-120000").mkdir()   # its unzipped folder
+    (tmp_path / "tax-return.pdf").write_bytes(b"")
+    assert find_import(ZIP, tmp_path) == zip_path
+    for near in ("survival", ZIP[:-4], ZIP.upper().replace(".ZIP", ".zip"), "AutoAdmin-survival-*.zip"):
+        with pytest.raises(ServerError) as e:
+            find_import(near, tmp_path)
+        assert "tax-return" not in str(e.value) and ZIP not in str(e.value)  # nothing listed
+    for bad in ("../secrets.zip", "a/b.zip", "C:\\x.zip", ".hidden.zip"):
+        with pytest.raises(ServerError, match="not a path"):
+            find_import(bad, tmp_path)
+
+
+async def test_import_is_owner_and_admin_only_by_default(services, downloads, fresh_install):
+    exported(services, downloads)
+    services.perms.grant(USER.id, USER.name, Perm.WORLDS_MANAGE)
+    out, err = await call(services, USER, "worlds", world_args(action="import", file=ZIP))
+    assert err and "worlds.import" in out and not fresh_install
+    services.perms.grant(USER.id, USER.name, Perm.WORLDS_IMPORT)    # an admin can grant it
+    out, err = await call(services, USER, "worlds", world_args(action="import", file=ZIP))
+    assert not err, out
+
+
+async def test_import_refusals(services, downloads, fresh_install):
+    exported(services, downloads)
+    make_world(services, "survival")
+    out, err = await call(services, ADMIN, "worlds", world_args(action="import", file=ZIP))
+    assert err and "already exists" in out and not fresh_install
+    (downloads / "AutoAdmin-junk-1.zip").write_bytes(b"not a zip")
+    out, err = await call(services, ADMIN, "worlds",
+                          world_args(action="import", file="AutoAdmin-junk-1.zip"))
+    assert err and "isn't a readable zip" in out
+
+
+async def test_import_fits_memory_to_this_machine(services, downloads, fresh_install, monkeypatch):
+    exported(services, downloads)
+    monkeypatch.setattr(ServerManager, "host_memory_mb", lambda self: 8192)
+    with zipfile.ZipFile(downloads / ZIP) as zf:
+        files = {n: zf.read(n) for n in zf.namelist()}
+    meta = json.loads(files["survival/autoadmin.json"])
+    meta["memory_mb"] = 32768
+    files["survival/autoadmin.json"] = json.dumps(meta).encode()
+    with zipfile.ZipFile(downloads / ZIP, "w") as zf:
+        for n, b in files.items():
+            zf.writestr(n, b)
+    out, err = await call(services, ADMIN, "worlds", world_args(action="import", file=ZIP))
+    assert not err, out
+    assert fresh_install[0][4] < 32768 and "too big for this machine" in out

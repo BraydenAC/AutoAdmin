@@ -242,5 +242,5 @@ async def test_system_can_disable_mods_and_change_settings_only(services, world)
     assert not err and services.server.state().memory_mb == 3072
     out, err = await reg.execute(ctx, "worlds", {"action": "delete", "name": "world",
                                                  "minecraft_version": "", "loader": "",
-                                                 "backup_id": "", "count": 0})
+                                                 "backup_id": "", "count": 0, "file": ""})
     assert err and "DENIED" in out

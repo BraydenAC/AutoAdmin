@@ -22,6 +22,7 @@ class Perm(StrEnum):
     MODS_MANAGE = "mods.manage"
     CONFIG_EDIT = "config.edit"
     WORLDS_MANAGE = "worlds.manage"
+    WORLDS_IMPORT = "worlds.import"      # reads a named file from the host's Downloads
     BACKUPS_CREATE = "backups.create"
     BACKUPS_RESTORE = "backups.restore"
     WORLDS_DELETE = "worlds.delete"
@@ -36,7 +37,7 @@ class Perm(StrEnum):
 GRANTABLE: frozenset[Perm] = frozenset({
     Perm.CHAT, Perm.SERVER_CONTROL, Perm.SERVER_CONSOLE, Perm.PLAYERS_MANAGE,
     Perm.MODS_MANAGE, Perm.CONFIG_EDIT, Perm.WORLDS_MANAGE, Perm.BACKUPS_CREATE,
-    Perm.BACKUPS_RESTORE, Perm.WORLDS_DELETE,
+    Perm.BACKUPS_RESTORE, Perm.WORLDS_DELETE, Perm.WORLDS_IMPORT,
 })
 
 ADMIN_PERMS: frozenset[Perm] = GRANTABLE | {Perm.PERMS_GRANT}

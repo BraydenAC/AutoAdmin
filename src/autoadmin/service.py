@@ -59,6 +59,10 @@ def install_bot_service(config_path: Path) -> str:
             f"Logs:               journalctl --user -u {BOT_UNIT} -f")
 
 
+def bot_unit_installed() -> bool:
+    return (UNIT_DIR / BOT_UNIT).exists()
+
+
 def start_bot_unit() -> tuple[bool, str]:
     """Enable at login and (re)start, so new keys take effect."""
     for verb in ("enable", "restart"):
@@ -152,3 +156,38 @@ def bot_task_always_on() -> bool:
                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     # schtasks may print the XML as UTF-16 or in the console code page.
     return r.returncode == 0 and (b"S4U" in r.stdout or "S4U".encode("utf-16-le") in r.stdout)
+
+
+def bot_task_exists() -> bool:
+    return subprocess.run(["schtasks", "/Query", "/TN", BOT_TASK], capture_output=True,
+                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).returncode == 0
+
+
+def remove_bot_task() -> tuple[bool, str]:
+    """End the bot and delete its task. An always-on task was registered as
+    administrator, so deleting it may need the admin prompt too."""
+    from .setup.host import run_elevated
+
+    subprocess.run(["schtasks", "/End", "/TN", BOT_TASK], capture_output=True)
+    delete = ["schtasks", "/Delete", "/TN", BOT_TASK, "/F"]
+    r = subprocess.run(delete, capture_output=True, text=True)
+    if r.returncode == 0:
+        return True, ""
+    code = run_elevated(delete)
+    if code == 1223:
+        return False, "the administrator prompt was declined"
+    return code == 0, (r.stdout + r.stderr).strip() if code else ""
+
+
+# -- Linux: removal ---------------------------------------------------------------------
+
+def remove_unit(name: str) -> bool:
+    """Stop, disable and delete a systemd user unit. Returns False if there was none."""
+    path = UNIT_DIR / name
+    if not path.exists():
+        return False
+    subprocess.run(["systemctl", "--user", "disable", "--now", name], capture_output=True)
+    path.unlink()
+    subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+    subprocess.run(["systemctl", "--user", "reset-failed", name], capture_output=True)
+    return True

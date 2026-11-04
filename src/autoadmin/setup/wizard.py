@@ -11,10 +11,12 @@ from ..config import Config
 from . import checks, host as hostmod
 from .checks import CheckError, DiscordApi, Unauthorized, Unreachable
 from .console import Console
-from .files import EnvFile, ensure_config, set_discord_ids
+from .files import EnvFile, SetupRecord, ensure_config, set_discord_ids
 
 ANTHROPIC_ENV = "ANTHROPIC_API_KEY"
 PORTAL = "https://discord.com/developers/applications"
+SETUP_RECORD = "setup.json"      # in the runtime dir
+ANTHROPIC_KEYS = "https://console.anthropic.com/settings/keys"
 
 
 class SetupAborted(Exception):
@@ -47,6 +49,7 @@ class Wizard:
             io.say(f"Created {self.config_path.name} from the example.")
         self.config = Config.load(self.config_path)
         self.env = EnvFile(self.config_path.parent / ".env")
+        self.record = SetupRecord(self.config.runtime / SETUP_RECORD)
 
         try:
             self.anthropic_key()
@@ -75,12 +78,16 @@ class Wizard:
 
     # -- secrets ------------------------------------------------------------------------
 
-    def _secret(self, key: str, label: str, validate: Callable[[str], bool]) -> str:
-        """Keep or replace an existing value; loop until a value validates."""
+    def _secret(self, key: str, label: str, validate: Callable[[str], bool],
+                guide: Callable[[], None]) -> str:
+        """Keep or replace an existing value; loop until a value validates. `guide`
+        explains where to get a value, whenever a new one is needed."""
         value = self.env.get(key)
         if value and self.io.choose(f"{label} is already set (ends in …{value[-4:]}).",
                                     ["Keep it (it will be re-checked)", "Enter a new one"]) == 1:
             value = None
+        if not value:
+            guide()
         while True:
             if not value:
                 value = self.io.secret(label)
@@ -104,7 +111,7 @@ class Wizard:
             try:
                 missing = checks.check_anthropic(key, models)
             except Unauthorized:
-                self.io.say("That key was rejected. Create one at https://console.anthropic.com/settings/keys.")
+                self.io.say(f"That key was rejected. Create one at {ANTHROPIC_KEYS}.")
                 return False
             except Unreachable as e:
                 return self._unreachable(e)
@@ -118,16 +125,49 @@ class Wizard:
                 self.io.say("The key works.")
             return True
 
-        return self._secret(ANTHROPIC_ENV, "Anthropic API key", validate)
+        def guide() -> None:
+            self.io.say("Create a key in the Anthropic Console (API Keys, then Create Key) "
+                        "and copy it.")
+            self._link(ANTHROPIC_KEYS)
+
+        return self._secret(ANTHROPIC_ENV, "Anthropic API key", validate, guide)
+
+    def _link(self, url: str) -> None:
+        """Open `url` in the browser when there is one; always print it too."""
+        if self.io.open_url(url):
+            self.io.say(f"Opened in your browser (if it didn't appear, use this link):\n  {url}")
+        else:
+            self.io.say(f"Open this link:\n  {url}")
+
+    def _create_bot_steps(self) -> None:
+        self.io.say("AutoAdmin needs a Discord bot of its own. Creating one takes about a minute.")
+        self._link(PORTAL)
+        self.io.say('1. Click "New Application", name it (e.g. AutoAdmin), and click Create. '
+                    "(To use a bot you already made, click it instead.)")
+        self.io.say('2. Click "Bot" on the left, then "Reset Token", and copy the token.')
+
+    def _confirm_own_bot(self, api: DiscordApi, bot: dict, app: dict) -> bool:
+        """A bot that's already in other servers may be someone else's (a shared
+        .env, a copied token). Whoever holds a token acts as that bot everywhere."""
+        guilds = api.guilds()
+        current = str(self.config.discord.guild_id)
+        if not guilds or current in {g["id"] for g in guilds}:
+            return True
+        names = ", ".join(g["name"] for g in guilds[:5]) + (", …" if len(guilds) > 5 else "")
+        owner = (app.get("owner") or {}).get("username")
+        self.io.say(f"{bot['username']} is already in: {names}."
+                    + (f" It was created by Discord user {owner}." if owner else ""))
+        if self.io.confirm("Is this your own bot?", default=True):
+            return True
+        self.io.say("Each AutoAdmin install needs its own bot: anyone with a bot's token can "
+                    "act as it in every server it's in. Please don't use someone else's.")
+        self._create_bot_steps()
+        return False
 
     def discord_token(self) -> tuple[DiscordApi, dict, dict]:
         io = self.io
         io.heading("Discord bot")
         token_env = self.config.discord.token_env
-        if not self.env.get(token_env):
-            io.say(f"1. Open {PORTAL} and create an application (or open yours).")
-            io.say("2. On the Bot page, turn on Message Content Intent and save.")
-            io.say("3. Click Reset Token and copy the token.")
         found: dict = {}
 
         def validate(token: str) -> bool:
@@ -136,7 +176,7 @@ class Wizard:
                 try:
                     found.update(api=api, bot=api.me(), app=api.application())
                     io.say(f"Connected as {found['bot']['username']}.")
-                    return True
+                    return self._confirm_own_bot(api, found["bot"], found["app"])
                 except Unauthorized:
                     io.say("Discord rejected that token. Reset it on the Bot page and copy it again.")
                     return False
@@ -146,15 +186,17 @@ class Wizard:
                     if not io.confirm("Try again?", default=True):
                         raise SetupAborted("Discord is unreachable")
 
-        self._secret(token_env, "Discord bot token", validate)
+        self._secret(token_env, "Discord bot token", validate, self._create_bot_steps)
         return found["api"], found["app"], found["bot"]
 
     # -- Discord connection ------------------------------------------------------------------
 
     def message_content_intent(self, api: DiscordApi, app: dict) -> None:
         while not checks.has_message_content(app):
-            self.io.say("Message Content Intent is off, so the bot couldn't read messages. Turn it "
-                        f"on at {PORTAL}/{app['id']}/bot and save.")
+            self.io.say("The bot needs permission to read messages (Message Content Intent).")
+            self._link(f"{PORTAL}/{app['id']}/bot")
+            self.io.say('On that page, scroll to "Privileged Gateway Intents", turn on '
+                        '"Message Content Intent", and click "Save Changes".')
             self.io.pause("Press Enter when it's on")
             app = api.application()
         self.io.say("Message Content Intent is on.")
@@ -165,8 +207,7 @@ class Wizard:
         while True:
             guilds = api.guilds()
             if not guilds:
-                io.say(f"Add the bot to your Discord server with this link:\n  {invite}")
-                io.pause("Press Enter once it's added")
+                self._invite(invite)
                 continue
             names = [g["name"] + (" (current)" if g["id"] == current else "") for g in guilds]
             default = next((i for i, g in enumerate(guilds) if g["id"] == current), 0)
@@ -174,8 +215,14 @@ class Wizard:
                           [*names, "Add the bot to another server"], default)
             if i < len(guilds):
                 return guilds[i]["id"]
-            io.say(f"Invite link:\n  {invite}")
-            io.pause("Press Enter once it's added")
+            self._invite(invite)
+
+    def _invite(self, invite: str) -> None:
+        self.io.say("Now add the bot to your Discord server.")
+        self._link(invite)
+        self.io.say('Pick the server, click "Continue", then "Authorize". Only servers where '
+                    'you have Manage Server are listed.')
+        self.io.pause("Press Enter once it's added")
 
     def pick_channel(self, api: DiscordApi, guild_id: str, bot_id: str) -> dict:
         io = self.io
@@ -207,6 +254,11 @@ class Wizard:
         io.heading("Running in the background")
         if self.host.os == "linux":
             if not io.confirm("Run the bot as a systemd user service and start it now?", default=True):
+                if service.bot_unit_installed() and io.confirm(
+                        "The bot's service from an earlier setup is still installed. Stop and "
+                        "remove it?", default=True):
+                    service.remove_unit(service.BOT_UNIT)
+                    io.say("Removed it. The bot only runs when you start it yourself now.")
                 return False
             path = service.write_bot_unit(self.config_path)
             ok, err = service.start_bot_unit()
@@ -221,6 +273,10 @@ class Wizard:
             "Don't run it in the background",
         ])
         if mode == 2:
+            if service.bot_task_exists():
+                ok, note = service.remove_bot_task()
+                io.say(f"Removed the '{service.BOT_TASK}' task." if ok
+                       else f"Couldn't remove the '{service.BOT_TASK}' task: {note}.")
             return False
         log_file = self.config.runtime / "logs" / "bot.log"
         log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -240,6 +296,8 @@ class Wizard:
         if not io.confirm("Keep them running after logout and start them at boot?", default=True):
             return
         ok, out = hostmod.enable_linger()
+        if ok:
+            self.record.update(linger=True)
         io.say("Lingering is on." if ok else
                f"Couldn't enable it ({out}). Run `sudo loginctl enable-linger $USER` yourself.")
 
@@ -255,6 +313,7 @@ class Wizard:
             if io.confirm(f"{kind} is running. Open port {port}/tcp so other devices can join? "
                           "(uses sudo)", default=False):
                 if hostmod.run_interactive(commands):
+                    self.record.update(firewall=kind, port=port)
                     io.say(f"Opened {port}/tcp.")
                     return
                 io.say("That didn't work.")
@@ -268,6 +327,7 @@ class Wizard:
         if io.confirm(f"Open port {port}/tcp in Windows Firewall so other devices can join? "
                       "(asks for admin)", default=False):
             if hostmod.run_elevated(command) == 0:
+                self.record.update(firewall="windows", port=port)
                 io.say(f"Opened {port}/tcp.")
                 return
             io.say("That didn't work.")

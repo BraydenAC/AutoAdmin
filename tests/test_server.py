@@ -216,7 +216,7 @@ async def test_install_needs_worlds_manage(services):
     out, err = await build_registry().execute(
         ToolContext(USER, services), "worlds",
         {"action": "create", "name": "w", "minecraft_version": "1.21.1", "loader": "fabric",
-         "backup_id": "", "count": 0})
+         "backup_id": "", "count": 0, "file": ""})
     assert err and "worlds.manage" in out
 
 

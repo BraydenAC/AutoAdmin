@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from ..auth import Perm, Principal
+from ..server import transfer
 from ..server.manager import LOADERS, ServerError
 from .confirm import confirmed
 from .registry import Registry, ToolContext, ToolError
@@ -14,6 +15,7 @@ WORLD_ACTIONS: dict[str, Perm | tuple[Perm, ...]] = {
     "list": Perm.CHAT,
     "list_backups": Perm.CHAT,
     "create": Perm.WORLDS_MANAGE,
+    "import": Perm.WORLDS_IMPORT,
     "switch": Perm.WORLDS_MANAGE,
     "backup": Perm.BACKUPS_CREATE,
     "restore": Perm.BACKUPS_RESTORE,
@@ -55,12 +57,19 @@ def register(r: Registry) -> None:
     @r.tool("worlds",
             "World profiles and backups. Each world is a separate server folder with its own "
             "version, loader, mods, and save. Unused arguments: '' or 0.\n"
-            "list | create(name, minecraft_version, loader) | switch(name) | delete(name)* | "
+            "list | create(name, minecraft_version, loader) | import(file, name?) | "
+            "switch(name) | delete(name)* | "
             "backup(name) | list_backups(name) | restore(name, backup_id)* | "
             "delete_backup(name, backup_id)* | set_backup_retention(count; owner only).\n"
             "* needs the requester's confirmation on a later message; call once, ask, then call "
             "again with the same arguments. The server must be stopped to switch, or to delete/"
-            "restore the active world. create blocks until installed and downloads Java as needed.",
+            "restore the active world. create blocks until installed and downloads Java as needed.\n"
+            "import: rebuild a world saved by `autoadmin uninstall` from the host computer's "
+            "Downloads folder. file = the zip's full file name exactly as the requester wrote "
+            "it, e.g. AutoAdmin-survival-20261104-111500.zip; never guess, shorten, or complete "
+            "it. If they don't know it, they must find it on the host; nothing can be listed. "
+            "name is optional (defaults to the old world's name). Installs the same Minecraft "
+            "version and loader for this machine, then brings over the save, settings and mods.",
             permission=_by_action(WORLD_ACTIONS),
             properties={
                 "action": {"type": "string", "enum": list(WORLD_ACTIONS)},
@@ -69,10 +78,12 @@ def register(r: Registry) -> None:
                                       "description": "For create: e.g. 1.21.1, 26.3, latest"},
                 "loader": {"type": "string", "enum": ["", *LOADERS]},
                 "backup_id": {"type": "string"},
+                "file": {"type": "string",
+                         "description": "For import: the zip's exact file name"},
                 "count": {"type": "integer"},
             })
     async def worlds(ctx: ToolContext, action: str, name: str, minecraft_version: str,
-                     loader: str, backup_id: str, count: int) -> str:
+                     loader: str, backup_id: str, count: int, file: str) -> str:
         s = ctx.services
         who = str(ctx.principal)
         try:
@@ -86,6 +97,11 @@ def register(r: Registry) -> None:
                     _need(loader, "a loader", action)
                     return await s.server.install(minecraft_version, loader, who, ctx.say,
                                                   world=name)
+                case "import":
+                    source = transfer.find_import(_need(file, "a file", action),
+                                                  transfer.downloads_dir())
+                    return await transfer.import_world(s.server, source, name or None, who,
+                                                       ctx.say)
                 case "switch":
                     return await s.server.switch_world(_need(name, "a name", action))
                 case "delete":

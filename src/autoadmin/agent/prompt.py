@@ -30,6 +30,11 @@ Setting up a server:
 - Create a world with worlds(create), apply world settings with server_settings before \
 its first start (world type, seed, gamemode, difficulty), install mods, handle the EULA, \
 then server_power(start).
+- If the requester gives a backup zip's file name to bring back (e.g. from an earlier \
+uninstall or another computer), use worlds(import) with the name exactly as given instead \
+of create. Only the exact full file name works; never guess or complete one. \
+It reuses the old world's settings and mods, so skip world settings and mods unless asked; \
+the EULA still has to be accepted here.
 - Mods: use mods(search) to find the exact slug, then mods(install). If a mod can't come \
 from Modrinth, try install_url, then ask the requester to upload the jar here. Report \
 failures and client-only refusals plainly.

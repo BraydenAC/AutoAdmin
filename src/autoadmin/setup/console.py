@@ -3,6 +3,19 @@
 from __future__ import annotations
 
 import getpass
+import os
+import sys
+import webbrowser
+
+
+def has_browser() -> bool:
+    """A graphical browser can open here. Over SSH or on a headless Linux box,
+    webbrowser would fall back to a text browser and take over the terminal."""
+    if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"):
+        return False
+    if sys.platform.startswith("linux"):
+        return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    return True
 
 
 class Console:
@@ -14,6 +27,14 @@ class Console:
 
     def secret(self, prompt: str) -> str:
         return getpass.getpass(f"{prompt}: ").strip()
+
+    def open_url(self, url: str) -> bool:
+        if not has_browser():
+            return False
+        try:
+            return webbrowser.open(url)
+        except Exception:      # no usable browser
+            return False
 
     def pause(self, prompt: str = "Press Enter to continue") -> None:
         input(f"{prompt}… ")
