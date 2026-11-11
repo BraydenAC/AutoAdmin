@@ -17,6 +17,7 @@ from .agent import Agent
 from .auth import SYSTEM, Perm, Principal
 from .budget import BudgetEvent
 from .services import Services
+from .tools.confirm import note_turn
 
 IDLE_EXPIRY_S = 24 * 3600
 SYSTEM_HEADER = "[from AutoAdmin supervisor id=system role=system]"
@@ -142,6 +143,9 @@ class Router:
             for a in msg.attachments:
                 uploads[a.filename] = {"url": a.url, "by": msg.author.id, "size": a.size}
             last_bot_id: str | None = None
+            turn = next(self._turns)
+            # Every human message counts, so a confirmation only matches the very next one.
+            note_turn(conv.state, msg.author.id, turn)
 
             async def emit(text: str) -> None:
                 nonlocal last_bot_id
@@ -159,7 +163,7 @@ class Router:
                 conv.messages.append(
                     {"role": "user", "content": f"{self._header(msg)}\n{msg.text}"})
                 await self.agent.run(conv.messages, msg.author, msg.mentions, emit,
-                                     turn=next(self._turns), conv_state=conv.state)
+                                     turn=turn, conv_state=conv.state)
 
             await self._announce_budget(conv, last_bot_id, send)
 

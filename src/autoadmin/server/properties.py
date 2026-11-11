@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 LEVEL_TYPES = {
@@ -38,19 +39,43 @@ def _level_type(v: str) -> str:
     return LEVEL_TYPES[key]
 
 
+# Anything Java or Python treats as a line break, or that has no business in a value.
+# A carriage return would otherwise start a new, unvalidated key in the file.
+_CONTROL = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
+# Letters, digits, -, _ and spaces: never a path, so the save stays in the world folder.
+LEVEL_NAME = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9 _-]{0,63}")
+DEFAULT_LEVEL_NAME = "world"
+
+
 def _text(max_len: int):
     def check(v: str) -> str:
-        if len(v) > max_len or "\n" in v:
+        if len(v) > max_len or _CONTROL.search(v):
             raise ValueError(f"must be one line, at most {max_len} characters")
+        # Java reads a trailing backslash as "continued on the next line".
+        if v.endswith("\\"):
+            raise ValueError("must not end with a backslash")
         return v
     return check
+
+
+def _level_name(v: str) -> str:
+    if not LEVEL_NAME.fullmatch(v):
+        raise ValueError("must be a folder name: letters, digits, spaces, - and _ "
+                         "(at most 64 characters)")
+    return v
+
+
+def level_name(props: dict[str, str]) -> str | None:
+    """The save folder's name, or None if the file names something unsafe (a path)."""
+    name = props.get("level-name", DEFAULT_LEVEL_NAME) or DEFAULT_LEVEL_NAME
+    return name if LEVEL_NAME.fullmatch(name) else None
 
 
 # Keys the agent may change. RCON, ports, and query settings are managed by AutoAdmin.
 EDITABLE = {
     "level-seed": _text(64),
     "level-type": _level_type,
-    "level-name": _text(64),
+    "level-name": _level_name,
     "gamemode": _choice("survival", "creative", "adventure", "spectator"),
     "force-gamemode": _choice(*_BOOL),
     "difficulty": _choice("peaceful", "easy", "normal", "hard"),

@@ -74,8 +74,8 @@ def storage(runtime: Path) -> dict:
     worlds_root = runtime / "worlds"
     saves = installs = 0.0
     for wdir in (p for p in worlds_root.glob("*") if p.is_dir()) if worlds_root.exists() else []:
-        level = properties.read(wdir / "server.properties").get("level-name", "world")
-        save = _dir_size(wdir / level) / MB if (wdir / level).exists() else 0
+        level = properties.level_name(properties.read(wdir / "server.properties"))
+        save = _dir_size(wdir / level) / MB if level and (wdir / level).exists() else 0
         saves += save
         installs += _dir_size(wdir) / MB - save
     sizes = {

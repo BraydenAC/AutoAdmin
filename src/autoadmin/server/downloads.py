@@ -21,6 +21,9 @@ log = logging.getLogger(__name__)
 USER_AGENT = "AutoAdmin/0.1 (+https://github.com/BraydenAC/AutoAdmin)"
 RETRIES = 3
 CHUNK = 1 << 20
+# Java runtimes and server jars are well under this; anything bigger is a mistake
+# or an attempt to fill the disk.
+MAX_DOWNLOAD_BYTES = 1 << 30
 
 
 class DownloadError(Exception):
@@ -31,16 +34,35 @@ class NotFound(DownloadError):
     """HTTP 404: retrying won't help."""
 
 
+class TooLarge(DownloadError):
+    """Over the size limit: retrying won't help."""
+
+
+class _HttpsOnlyRedirects(urllib.request.HTTPRedirectHandler):
+    """Follow redirects only to https, so a link can't bounce a download to plain
+    http or to a local service."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not newurl.lower().startswith("https://"):
+            raise DownloadError(f"refused redirect to a non-https address: {newurl}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_opener = urllib.request.build_opener(_HttpsOnlyRedirects)
+
+
 def _final(e: Exception) -> Exception | None:
     """Client errors (4xx) are permanent; return the error to raise immediately."""
     if isinstance(e, urllib.error.HTTPError) and 400 <= e.code < 500:
         return NotFound(str(e)) if e.code == 404 else DownloadError(str(e))
+    if isinstance(e, DownloadError):      # refused redirect, too large
+        return e
     return None
 
 
 def _http_get(url: str, timeout: float = 60) -> urllib.request.addinfourl:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    return urllib.request.urlopen(req, timeout=timeout)
+    return _opener.open(req, timeout=timeout)
 
 
 def get_json_sync(url: str) -> object:
@@ -87,21 +109,36 @@ class Cache:
             return self.root / algo / digest.lower()
         return self.root / "url" / hashlib.sha256(url.encode()).hexdigest()
 
-    def _download_sync(self, url: str, dest: Path, algo: str | None, digest: str | None) -> None:
+    def _download_sync(self, url: str, dest: Path, algo: str | None, digest: str | None,
+                       max_bytes: int) -> None:
         dest.parent.mkdir(parents=True, exist_ok=True)
         tmp = dest.with_name(dest.name + ".part")
         h = hashlib.new(algo) if algo else None
-        with _http_get(url) as r, tmp.open("wb") as f:
-            while chunk := r.read(CHUNK):
-                f.write(chunk)
-                if h:
-                    h.update(chunk)
+        too_big = TooLarge(f"{url} is larger than {max_bytes // (1 << 20)} MB")
+        with _http_get(url) as r:
+            length = r.headers.get("Content-Length")
+            if length and length.isdigit() and int(length) > max_bytes:
+                raise too_big
+            received = 0
+            try:
+                with tmp.open("wb") as f:
+                    while chunk := r.read(CHUNK):
+                        received += len(chunk)
+                        if received > max_bytes:     # the header can be missing or wrong
+                            raise too_big
+                        f.write(chunk)
+                        if h:
+                            h.update(chunk)
+            except BaseException:
+                tmp.unlink(missing_ok=True)
+                raise
         if h and digest and h.hexdigest().lower() != digest.lower():
             tmp.unlink(missing_ok=True)
             raise DownloadError(f"checksum mismatch for {url}")
         os.replace(tmp, dest)
 
-    async def fetch(self, url: str, *, algo: str | None = None, digest: str | None = None) -> Path:
+    async def fetch(self, url: str, *, algo: str | None = None, digest: str | None = None,
+                    max_bytes: int = MAX_DOWNLOAD_BYTES) -> Path:
         """Return a cached path for `url`, downloading it if needed."""
         dest = self._target(url, algo, digest)
         if dest.exists():
@@ -109,7 +146,7 @@ class Cache:
         last: Exception | None = None
         for attempt in range(RETRIES):
             try:
-                await asyncio.to_thread(self._download_sync, url, dest, algo, digest)
+                await asyncio.to_thread(self._download_sync, url, dest, algo, digest, max_bytes)
                 return dest
             except Exception as e:
                 if final := _final(e):

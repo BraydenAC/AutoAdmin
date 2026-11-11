@@ -10,12 +10,15 @@ import pytest
 from autoadmin.agent.investigator import Investigator
 from autoadmin.auth import Perm
 from autoadmin.server import properties
-from autoadmin.server.downloads import Cache, DownloadError
+from autoadmin.server import downloads
+from autoadmin.server.downloads import Cache, DownloadError, TooLarge
 from autoadmin.server.incidents import excerpt_failure, read_lines
-from autoadmin.server.manager import InstallState, StartOutcome
+from autoadmin.server.manager import (MANAGED_PROPERTIES, InstallState, ServerError,
+                                      StartOutcome)
 from autoadmin.server.backend import ProcessState
 from autoadmin.server.versions import VersionError, neoforge_prefix, pick_neoforge
 from autoadmin.tools import ToolContext, ToolError, build_registry
+from autoadmin.tools.confirm import note_turn
 from autoadmin.tools.server import console_permission
 
 from .conftest import ADMIN, OWNER, USER, FakeClient, response, text, tool_use
@@ -79,6 +82,37 @@ def test_properties_validate_and_merge(tmp_path):
     assert "difficulty" in str(e.value) and "view-distance" in str(e.value)
 
 
+@pytest.mark.parametrize("key,value", [
+    ("motd", "hi\rmanagement-server-enabled=true"),       # a CR starts a new key
+    ("motd", "hi\x85x"), ("motd", "hi\u2028x"), ("motd", "a\x00b"),
+    ("motd", "ends with a backslash\\"),                  # Java line continuation
+    ("generator-settings", "{}\rserver-port=1"),
+    ("level-name", "../outside"), ("level-name", "/home/me/x"), ("level-name", "a/b"),
+    ("level-name", "C:\\x"), ("level-name", ".."),
+])
+def test_properties_refuse_injection_and_paths(key, value):
+    with pytest.raises(ValueError):
+        properties.validate({key: value})
+
+
+def test_level_name_accepts_folder_names():
+    assert properties.validate({"level-name": "My World_2"}) == {"level-name": "My World_2"}
+    assert properties.level_name({}) == "world"
+    assert properties.level_name({"level-name": "../x"}) is None
+
+
+async def test_start_refuses_unsafe_level_name(services):
+    _installed(services)
+    (services.server.dir / "server.properties").write_text("level-name=../../escape\n")
+    services.server.backend = FakeUnit([ProcessState("inactive", None, "")])
+    with pytest.raises(ServerError, match="level-name"):
+        await services.server.start()
+
+
+def test_start_forces_management_server_off():
+    assert MANAGED_PROPERTIES["management-server-enabled"] == "false"
+
+
 # -- console permission mapping ------------------------------------------------------
 
 @pytest.mark.parametrize("cmd,perm", [
@@ -129,6 +163,48 @@ async def test_cache_rejects_bad_checksum(tmp_path, monkeypatch):
 
 async def _instant(_):
     return None
+
+
+async def test_cache_refuses_oversized_by_header(tmp_path):
+    src = tmp_path / "big.jar"
+    src.write_bytes(b"x" * 100)
+    with pytest.raises(TooLarge):          # file:// sends Content-Length; not retried
+        await Cache(tmp_path / "c").fetch(src.as_uri(), max_bytes=10)
+    assert not any((tmp_path / "c").rglob("*.part"))
+
+
+async def test_cache_refuses_oversized_without_header(tmp_path, monkeypatch):
+    class Body:
+        headers: dict = {}
+
+        def __init__(self):
+            self.chunks = [b"x" * 6, b"x" * 6]
+
+        def read(self, _):
+            return self.chunks.pop(0) if self.chunks else b""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(downloads, "_http_get", lambda url, timeout=60: Body())
+    with pytest.raises(TooLarge):
+        await Cache(tmp_path / "c").fetch("https://example.invalid/x.jar", max_bytes=10)
+    assert not any((tmp_path / "c").rglob("*.part"))
+
+
+@pytest.mark.parametrize("target", ["http://example.com/x.jar", "file:///etc/passwd",
+                                    "ftp://example.com/x"])
+def test_redirects_only_to_https(target):
+    import urllib.request
+    req = urllib.request.Request("https://example.com/start")
+    with pytest.raises(DownloadError):
+        downloads._HttpsOnlyRedirects().redirect_request(req, None, 302, "Found", {}, target)
+    ok = downloads._HttpsOnlyRedirects().redirect_request(
+        req, None, 302, "Found", {}, "https://cdn.example.com/x.jar")
+    assert ok.full_url == "https://cdn.example.com/x.jar"
 
 
 # -- startup detection ---------------------------------------------------------------------
@@ -198,6 +274,7 @@ async def test_set_memory_guard(services):
 async def test_eula_needs_a_later_human_message(services):
     _installed(services)
     reg, state = build_registry(), {}
+    note_turn(state, ADMIN.id, 5)
     ctx = ToolContext(ADMIN, services, turn=5, conv_state=state)
     accept, request = {"action": "accept"}, {"action": "request"}
     out, err = await reg.execute(ctx, "eula", accept)
@@ -205,11 +282,30 @@ async def test_eula_needs_a_later_human_message(services):
     await reg.execute(ctx, "eula", request)
     out, err = await reg.execute(ctx, "eula", accept)             # same turn
     assert err and "new message" in out
+    note_turn(state, ADMIN.id, 6)
     later = ToolContext(ADMIN, services, turn=6, conv_state=state)
     out, err = await reg.execute(later, "eula", accept)
     assert not err
     assert "eula=true" in (services.server.dir / "eula.txt").read_text()
     assert services.server.eula_record()["accepted_by"].startswith("Ada")
+
+
+async def test_eula_request_expires_and_belongs_to_requester(services):
+    _installed(services)
+    reg, state = build_registry(), {}
+    accept, request = {"action": "accept"}, {"action": "request"}
+    note_turn(state, ADMIN.id, 1)
+    await reg.execute(ToolContext(ADMIN, services, turn=1, conv_state=state), "eula", request)
+    note_turn(state, OWNER.id, 2)                 # someone else can't accept it
+    out, err = await reg.execute(ToolContext(OWNER, services, turn=2, conv_state=state),
+                                 "eula", accept)
+    assert err and "request" in out
+    note_turn(state, ADMIN.id, 3)
+    note_turn(state, ADMIN.id, 4)                 # not the reply right after the request
+    out, err = await reg.execute(ToolContext(ADMIN, services, turn=4, conv_state=state),
+                                 "eula", accept)
+    assert err and "expired" in out
+    assert services.server.eula_record() is None
 
 
 async def test_install_needs_worlds_manage(services):
@@ -274,3 +370,26 @@ async def test_server_settings_view_vs_change_permissions(services):
     change["changes"].append({"key": "memory-mb", "value": "4096"})
     out, err = await reg.execute(ToolContext(ADMIN, services), "server_settings", change)
     assert not err and "4096 MB" in out and "difficulty=hard" in out
+
+
+def test_investigator_reads_only_the_tail_of_huge_files(services, monkeypatch):
+    monkeypatch.setattr("autoadmin.agent.investigator.MAX_FILE_BYTES", 64)
+    _installed(services)
+    log = services.server.dir / "logs" / "latest.log"
+    log.parent.mkdir()
+    log.write_text("".join(f"line {i:03d}\n" for i in range(100)))   # 900 bytes
+    inv = Investigator(services, client=object())
+    out = inv._tool("read_file", {"path": "worlds/world/logs/latest.log", "start_line": 1,
+                                  "max_lines": 200}, [])
+    assert "only its last" in out and "line 099" in out and "line 000" not in out
+
+
+@pytest.mark.parametrize("pattern", ["(a+)+$", "(.*x)*", "(\\w+\\s?)+$", "x" * 201])
+def test_investigator_refuses_runaway_patterns(services, pattern):
+    _installed(services)
+    log = services.server.dir / "logs" / "latest.log"
+    log.parent.mkdir()
+    log.write_text("a" * 50 + "!\n")
+    with pytest.raises(ValueError):
+        Investigator(services, client=object())._tool(
+            "grep", {"path": "worlds/world/logs/latest.log", "pattern": pattern}, [])

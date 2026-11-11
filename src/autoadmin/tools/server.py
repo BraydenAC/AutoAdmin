@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..auth import Perm
 from ..server.manager import EULA_URL, ServerError, StartOutcome
+from .confirm import previous_turn
 from .registry import Registry, ToolContext, ToolError
 
 if TYPE_CHECKING:
@@ -81,14 +82,18 @@ def register(r: Registry, investigator: Investigator | None = None) -> None:
             properties={"action": {"type": "string", "enum": ["request", "accept"]}})
     async def eula(ctx: ToolContext, action: str) -> str:
         if action == "request":
-            ctx.conv_state["eula_prompt_turn"] = ctx.turn
+            ctx.conv_state["eula_prompt"] = {"by": ctx.principal.id, "turn": ctx.turn}
             return (f"Ask the requester to read {EULA_URL} and reply yes to accept it. "
                     "Do not accept in this turn.")
-        prompted = ctx.conv_state.get("eula_prompt_turn")
-        if prompted is None:
-            raise ToolError("call eula(action=request) first")
-        if prompted >= ctx.turn:
+        prompted = ctx.conv_state.get("eula_prompt")
+        if prompted is None or prompted["by"] != ctx.principal.id:
+            raise ToolError("call eula(action=request) first, for this requester")
+        if prompted["turn"] == ctx.turn:
             raise ToolError("the requester must confirm in a new message first")
+        # Only the reply right after the request counts; an old request has expired.
+        del ctx.conv_state["eula_prompt"]
+        if prompted["turn"] != previous_turn(ctx):
+            raise ToolError("that EULA request has expired; call eula(action=request) again")
         try:
             return ctx.services.server.accept_eula(str(ctx.principal))
         except ServerError as e:

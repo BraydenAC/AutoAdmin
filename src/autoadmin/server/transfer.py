@@ -156,8 +156,13 @@ async def import_world(server: ServerManager, source: Path, world: str | None, b
         try:
             await progress("Copying the world, settings and mods…")
             await asyncio.to_thread(_overlay, src, files, target)
-            properties.write(target / "server.properties", {
-                **MANAGED_PROPERTIES, "server-port": str(server.cfg.server_port)})
+            props_file = target / "server.properties"
+            forced = {**MANAGED_PROPERTIES, "server-port": str(server.cfg.server_port)}
+            # A level-name that is a path points outside the world folder, so it can't
+            # have come with this zip's save anyway.
+            if properties.level_name(properties.read(props_file)) is None:
+                forced["level-name"] = properties.DEFAULT_LEVEL_NAME
+            properties.write(props_file, forced)
             st = server.state(world)
             st.mods = old.get("mods") or []
             st.extra = old.get("extra") or {}

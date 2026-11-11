@@ -16,6 +16,7 @@ from autoadmin.server.mods import inspect_jar
 from autoadmin.server.backend import ProcessState
 from autoadmin.services import Services
 from autoadmin.tools import ToolContext, build_registry
+from autoadmin.tools.confirm import note_turn
 
 from .conftest import ADMIN, OWNER, USER
 
@@ -59,8 +60,9 @@ def mod_args(**kw):
 
 
 async def call(services, who, tool, args, turn=1, state=None, mentions=None):
-    ctx = ToolContext(who, services, turn=turn, conv_state=state if state is not None else {},
-                      mentions=mentions or {})
+    state = state if state is not None else {}
+    note_turn(state, who.id, turn)      # as the router does for each human message
+    ctx = ToolContext(who, services, turn=turn, conv_state=state, mentions=mentions or {})
     return await build_registry().execute(ctx, tool, args)
 
 
@@ -111,6 +113,21 @@ async def test_delete_world_needs_confirmation_from_same_person_later(services):
     assert (services.server.worlds_root / "doomed").exists()
     out, err = await call(services, ADMIN, "worlds", args, turn=3, state=state)
     assert not err and "Deleted" in out and not (services.server.worlds_root / "doomed").exists()
+
+
+async def test_unconfirmed_request_expires_after_the_next_message(services):
+    make_world(services, "alpha")
+    make_world(services, "doomed", activate=False)
+    state = {}
+    args = world_args(action="delete", name="doomed")
+    out, _ = await call(services, ADMIN, "worlds", args, turn=1, state=state)
+    assert "CONFIRMATION NEEDED" in out
+    note_turn(state, ADMIN.id, 2)          # they replied "no" (no tool call)
+    out, _ = await call(services, ADMIN, "worlds", args, turn=3, state=state)   # days later
+    assert "CONFIRMATION NEEDED" in out
+    assert (services.server.worlds_root / "doomed").exists()
+    out, err = await call(services, ADMIN, "worlds", args, turn=4, state=state)
+    assert not err and "Deleted" in out
 
 
 # -- backups -------------------------------------------------------------------------------
@@ -250,6 +267,16 @@ async def test_install_with_dependency_and_bounces(services, modrinth):
 
     out, _ = await call(services, ADMIN, "mods", mod_args(action="install", names=["clash", "modmenu"]))
     assert "incompatible with installed Mod Menu" in out and "already installed" in out
+
+
+async def test_failed_install_makes_no_backup(services, modrinth):
+    make_world(services)
+    for _ in range(4):        # more than the default retention of 3
+        out, err = await call(services, ADMIN, "mods", mod_args(action="install", names=["nope"]))
+        assert "not found" in out
+    out, _ = await call(services, ADMIN, "mods", mod_args(action="install", names=["sodium"]))
+    assert "client-only" in out
+    assert services.backups.list("world") == []
 
 
 async def test_remove_respects_dependencies_and_disable_moves_jar(services, modrinth):

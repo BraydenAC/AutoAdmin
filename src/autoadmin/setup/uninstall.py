@@ -153,7 +153,8 @@ class Uninstaller:
                 io.say(f"Couldn't save '{w.name}': {e}. Nothing was deleted.")
                 return False
             io.say(f"Saved {dest} ({dest.stat().st_size / 1024 ** 2:.0f} MB).")
-        level = properties.read(worlds[0] / "server.properties").get("level-name", "world")
+        level = (properties.level_name(properties.read(worlds[0] / "server.properties"))
+                 or properties.DEFAULT_LEVEL_NAME)
         io.say(f"Each zip holds the server's folder: settings, mods, and the world itself "
                f"(the '{level}' folder). To play it in single-player, copy that folder into "
                ".minecraft/saves.")

@@ -14,6 +14,7 @@ import shutil
 import tomllib
 import urllib.parse
 import zipfile
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -24,6 +25,8 @@ from .manager import InstallState, ServerError, ServerManager, _noop, Progress
 MODRINTH = "https://api.modrinth.com/v2"
 MOD_LOADERS = ("fabric", "neoforge")
 MAX_DEPENDENCY_DEPTH = 6
+# Big modpacks' largest jars are tens of MB; links and uploads are capped well above that.
+MAX_MOD_BYTES = 256 << 20
 
 
 def _q(value: object) -> str:
@@ -167,17 +170,27 @@ class ModManager:
         st = self._modded()
         if not slugs:
             raise ServerError("Name at least one mod slug.")
-        await self._backup(f"before installing {', '.join(slugs)}", by)
-        self.mods_dir.mkdir(exist_ok=True)
+        backed_up = False
+
+        async def before_copy() -> None:
+            # Only once a jar is actually about to change the mods folder: a failed or
+            # no-op install mustn't rotate a useful automatic backup out of retention.
+            nonlocal backed_up
+            if not backed_up:
+                await self._backup(f"before installing {', '.join(slugs)}", by)
+                self.mods_dir.mkdir(exist_ok=True)
+                backed_up = True
+
         report = InstallReport()
         await progress(f"Installing {len(slugs)} mod{'s' if len(slugs) > 1 else ''} from Modrinth…")
         for slug in slugs:
-            await self._install_one(st, slug, None, report, depth=0)
-        self.server.save_state(st)
-        return str(report) + await self._restart_note()
+            await self._install_one(st, slug, None, report, depth=0, before_copy=before_copy)
+        self.server.save_state(st)      # also records new required_by links on skipped mods
+        return str(report) + (await self._restart_note() if backed_up else "")
 
     async def _install_one(self, st: InstallState, ident: str, required_by: str | None,
-                           report: InstallReport, depth: int) -> None:
+                           report: InstallReport, depth: int,
+                           before_copy: Callable[[], Awaitable[None]]) -> None:
         label = ident if required_by is None else f"{ident} (needed by {required_by})"
         try:
             project = await get_json(f"{MODRINTH}/project/{urllib.parse.quote(ident)}")
@@ -242,6 +255,7 @@ class ModManager:
                 same["required_by"].append(required_by)
             report.skip(f"{label}: already installed as {same['filename']}")
             return
+        await before_copy()
         await asyncio.to_thread(shutil.copyfile, cached, self.mods_dir / file["filename"])
 
         st.mods.append({
@@ -258,7 +272,8 @@ class ModManager:
             return
         for dep in version.get("dependencies", []):
             if dep["dependency_type"] == "required" and dep.get("project_id"):
-                await self._install_one(st, dep["project_id"], slug, report, depth + 1)
+                await self._install_one(st, dep["project_id"], slug, report, depth + 1,
+                                        before_copy)
 
     # -- URL / upload fallbacks -------------------------------------------------------------
 
@@ -268,7 +283,7 @@ class ModManager:
         if not filename.endswith(".jar"):
             raise ServerError("Only .jar files can be installed as mods.")
         try:
-            cached = await self.server.cache.fetch(url)
+            cached = await self.server.cache.fetch(url, max_bytes=MAX_MOD_BYTES)
         except DownloadError as e:
             raise ServerError(f"Couldn't download {filename}: {e}")
         info = await asyncio.to_thread(inspect_jar, cached)

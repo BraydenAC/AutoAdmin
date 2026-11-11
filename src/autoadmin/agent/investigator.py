@@ -7,6 +7,7 @@ to do with the report.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -25,6 +26,14 @@ log = logging.getLogger(__name__)
 MAX_LINES = 200
 MAX_LINE_CHARS = 400
 MAX_GREP = 50
+# Only the end of a huge log is read: the failure is almost always there.
+MAX_FILE_BYTES = 8 << 20
+MAX_PATTERN_CHARS = 200
+# A quantified group that itself contains a quantifier, e.g. (a+)+ or (.*x)*: the
+# shape behind catastrophic backtracking.
+NESTED_QUANTIFIER = re.compile(r"\([^)]*[*+}][^)]*\)[*+{]")
+# File tools run in a worker thread; past this the model gets an error instead.
+TOOL_TIMEOUT_S = 15
 SECRET_KEYS = re.compile(r"^(rcon\.password)=.*$", re.M)
 
 SYSTEM = """\
@@ -137,24 +146,46 @@ class Investigator:
         raise JailError(f"{rel} is not readable by the investigator")
 
     @staticmethod
-    def _lines(p: Path) -> list[str]:
-        text = SECRET_KEYS.sub(r"\1=<redacted>", p.read_text(errors="replace"))
-        return text.splitlines()
+    def _lines(p: Path) -> tuple[list[str], str]:
+        """The file's lines (only the last MAX_FILE_BYTES of a huge file), and a note
+        to put in front of the result when it was cut."""
+        size = p.stat().st_size
+        with p.open("rb") as f:
+            if size > MAX_FILE_BYTES:
+                f.seek(size - MAX_FILE_BYTES)
+                data = f.read().split(b"\n", 1)[-1]       # drop the partial first line
+                note = (f"(file is {size >> 20} MB; only its last {MAX_FILE_BYTES >> 20} MB "
+                        "is readable, and line numbers count from there)\n")
+            else:
+                data, note = f.read(), ""
+        text = SECRET_KEYS.sub(r"\1=<redacted>", data.decode(errors="replace"))
+        return text.splitlines(), note
+
+    @staticmethod
+    def _pattern(pattern: str) -> re.Pattern:
+        if len(pattern) > MAX_PATTERN_CHARS:
+            raise ValueError(f"pattern is longer than {MAX_PATTERN_CHARS} characters")
+        if NESTED_QUANTIFIER.search(pattern):
+            raise ValueError("nested quantifiers like (a+)+ aren't allowed; simplify the pattern")
+        return re.compile(pattern)
 
     def _tool(self, name: str, args: dict, extra: list[str]) -> str:
         if name == "read_file":
-            lines = self._lines(self._readable(args["path"], extra))
+            lines, note = self._lines(self._readable(args["path"], extra))
             start = max(1, int(args.get("start_line", 1)))
             n = min(MAX_LINES, max(1, int(args.get("max_lines", 100))))
             chunk = lines[start - 1:start - 1 + n]
             body = "\n".join(f"{start + i}: {l[:MAX_LINE_CHARS]}" for i, l in enumerate(chunk))
-            return f"({len(lines)} lines total)\n{body}"
+            return f"{note}({len(lines)} lines total)\n{body}"
         if name == "grep":
-            lines = self._lines(self._readable(args["path"], extra))
-            rx = re.compile(args["pattern"])
-            hits = [f"{i + 1}: {l[:MAX_LINE_CHARS]}" for i, l in enumerate(lines) if rx.search(l)]
+            rx = self._pattern(str(args["pattern"]))
+            lines, note = self._lines(self._readable(args["path"], extra))
+            # Matched against the same clipped text that is shown, which also bounds
+            # how long one search can take.
+            clipped = (l[:MAX_LINE_CHARS] for l in lines)
+            hits = [f"{i + 1}: {l}" for i, l in enumerate(clipped) if rx.search(l)]
             more = f"\n... {len(hits) - MAX_GREP} more" if len(hits) > MAX_GREP else ""
-            return ("\n".join(hits[:MAX_GREP]) + more) or "no matches"
+            return note + (("\n".join(hits[:MAX_GREP]) + more) or "no matches")
         if name == "list_mods":
             mods = sorted(p.name for p in (self.server_dir / "mods").glob("*.jar"))
             return "\n".join(mods) or "no mods installed"
@@ -211,7 +242,14 @@ class Investigator:
                     report["incident_id"] = incident_id
                     return json.dumps(report)
                 try:
-                    out, err = self._tool(call.name, call.input or {}, inc.log_files), False
+                    # Off the event loop: big files and regexes mustn't stall the bot.
+                    out = await asyncio.wait_for(
+                        asyncio.to_thread(self._tool, call.name, call.input or {},
+                                          inc.log_files),
+                        TOOL_TIMEOUT_S)
+                    err = False
+                except TimeoutError:
+                    out, err = f"{call.name} took longer than {TOOL_TIMEOUT_S}s; narrow it down", True
                 except Exception as e:
                     out, err = f"{type(e).__name__}: {e}", True
                 results.append({"type": "tool_result", "tool_use_id": call.id,

@@ -36,8 +36,10 @@ DONE = re.compile(r"\]: Done \(\d+[.,]\d+s\)!")
 EULA_NEEDED = re.compile(r"You need to agree to the EULA")
 EULA_URL = "https://aka.ms/MinecraftEULA"
 NEOFORGE_OK = "The server installed successfully"
-# Forced on every install and start: RCON would open a network port.
-MANAGED_PROPERTIES = {"enable-rcon": "false", "enable-query": "false"}
+# Forced on every install and start: each would open a network port that controls
+# or describes the server outside AutoAdmin's permission checks.
+MANAGED_PROPERTIES = {"enable-rcon": "false", "enable-query": "false",
+                      "management-server-enabled": "false"}
 
 
 class ServerError(Exception):
@@ -66,6 +68,11 @@ class InstallState:
     eula_accepted_at: float | None = None
     mods: list[dict] = field(default_factory=list)
     extra: dict = field(default_factory=dict)
+
+
+def _save_exists(world_dir: Path) -> bool:
+    level = properties.level_name(properties.read(world_dir / "server.properties"))
+    return level is not None and (world_dir / level).exists()
 
 
 async def _noop(_: str) -> None:
@@ -175,8 +182,7 @@ class ServerManager:
                 "minecraft_version": st.minecraft_version,
                 "loader": st.loader if not st.loader_version else f"{st.loader} {st.loader_version}",
                 "mods": len(st.mods),
-                "world_generated": (d.parent / properties.read(
-                    d.parent / "server.properties").get("level-name", "world")).exists(),
+                "world_generated": _save_exists(d.parent),
             })
         return out
 
@@ -414,9 +420,13 @@ class ServerManager:
             st = self._require_installed()
             if await self.running():
                 return StartOutcome.ALREADY_RUNNING, "The server is already running."
+            props_file = self.dir / "server.properties"
+            if properties.level_name(properties.read(props_file)) is None:
+                raise ServerError("server.properties has an unsafe level-name (a path); set "
+                                  "level-name to a plain folder name before starting.")
             java = self._java_bin(st.java_major) or await self.ensure_java(st.java_major, progress)
             # The console is AutoAdmin's own channel; never a network port.
-            properties.write(self.dir / "server.properties", MANAGED_PROPERTIES)
+            properties.write(props_file, MANAGED_PROPERTIES)
             console = self.dir / "console.log"
             console.write_text("")   # so a previous run's "Done" can't be mistaken for this one
             started = time.time()
